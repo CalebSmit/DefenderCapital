@@ -27,12 +27,12 @@ class TestScenarioStructure:
             f"Expected 4 historical scenarios, got {len(stress_results.historical)}"
 
     def test_hypothetical_scenario_count(self, stress_results):
-        assert len(stress_results.hypothetical) == 5, \
-            f"Expected 5 hypothetical scenarios, got {len(stress_results.hypothetical)}"
+        assert len(stress_results.hypothetical) == 6, \
+            f"Expected 6 hypothetical scenarios, got {len(stress_results.hypothetical)}"
 
     def test_total_scenario_count(self, stress_results):
         total = len(stress_results.historical) + len(stress_results.hypothetical)
-        assert total == 9
+        assert total == 10
 
 
 class TestHistoricalScenarios:

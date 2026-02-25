@@ -1,0 +1,13 @@
+# Defender Capital Management — Development Requirements
+# Install with: pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# ─────────────────────────────────────────────────────────────────────────
+# Development & testing tools
+# ─────────────────────────────────────────────────────────────────────────
+pytest-cov==6.0.0
+pytest-timeout==2.4.0
+black==25.1.0
+isort==5.14.1
+mypy==1.14.0

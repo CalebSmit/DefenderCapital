@@ -451,6 +451,20 @@ def fetch_market_data(
     cfg = settings or load_result.settings
     holdings = load_result.holdings
 
+    # MED-2 FIX: Portfolio size guard
+    MAX_TICKERS_HARD = 200
+    MAX_TICKERS_SOFT = 100
+    if len(holdings) > MAX_TICKERS_HARD:
+        raise ValueError(
+            f"Portfolio has {len(holdings)} holdings, which exceeds the maximum of {MAX_TICKERS_HARD}. "
+            f"Please reduce to {MAX_TICKERS_HARD} or fewer holdings."
+        )
+    if len(holdings) > MAX_TICKERS_SOFT:
+        log.warning(
+            f"Portfolio has {len(holdings)} holdings (>{MAX_TICKERS_SOFT}). "
+            f"Computation may be slow. Consider reducing for better performance."
+        )
+
     tickers = [h.ticker for h in holdings]
     all_tickers = tickers + [cfg.benchmark_ticker]
 
@@ -541,6 +555,14 @@ def fetch_market_data(
         if not h.industry or h.industry in ("nan", ""):
             h.industry = meta.get("industry") or static.get("industry", "Unknown")
 
+        # MED-5 FIX: Flag non-USD tickers for currency risk warning
+        _currency = meta.get("currency") or meta.get("financialCurrency", "USD")
+        if _currency and _currency.upper() not in ("USD", "USX", ""):
+            data_quality_log.append(
+                f"CURRENCY [{h.ticker}]: Reports in {_currency}, not USD. "
+                f"Currency risk is NOT modelled — P&L treated as USD."
+            )
+
         # Recalculate derived fields
         h.market_value   = h.shares_held * h.current_price
         h.unrealized_pnl = (h.current_price - h.cost_basis) * h.shares_held
@@ -556,11 +578,32 @@ def fetch_market_data(
 
     # ── Risk-free rate ─────────────────────────────────────────────────────────
     rfr_override = cfg.risk_free_rate_value
+    rfr_warning  = ""
     if rfr_override is not None:
         risk_free_rate = rfr_override
         log.info(f"Risk-free rate (manual override): {risk_free_rate:.4f}")
     else:
         risk_free_rate = fetch_risk_free_rate()
+        # HIGH-5 FIX: Check if we're using the hardcoded fallback
+        cache_path = get_cache_path("risk_free_rate")
+        if not _cache_valid(cache_path, expiry_hours=6):
+            rfr_warning = (
+                f"Risk-free rate fallback used (4.5%). Live ^TNX fetch failed. "
+                f"Sharpe ratio and other RFR-dependent metrics may be slightly off."
+            )
+            log.warning(rfr_warning)
+
+    # MED-5 FIX: Check if any non-USD tickers were detected in the quality log
+    _currency_warnings = [l for l in data_quality_log if l.startswith("CURRENCY")]
+    _currency_warning_str = ""
+    if _currency_warnings:
+        _unique_tickers = [w.split("[")[1].split("]")[0] for w in _currency_warnings]
+        _currency_warning_str = (
+            f"Non-USD tickers detected: {', '.join(_unique_tickers)}. "
+            f"Currency risk is NOT modelled — all P&L treated as USD. "
+            f"Foreign exchange fluctuations will affect actual returns."
+        )
+        log.warning(_currency_warning_str)
 
     # ── Data quality report ────────────────────────────────────────────────────
     missing_cols = [t for t in tickers if t not in prices_df.columns]
@@ -574,6 +617,8 @@ def fetch_market_data(
         missing_data_points=total_nas,
         missing_tickers=missing_cols,
         log_lines=data_quality_log,
+        rfr_warning=rfr_warning,
+        currency_warning=_currency_warning_str,
     )
     log.info(str(quality))
 
@@ -674,6 +719,29 @@ def _batch_fetch_prices(
     df.index = pd.to_datetime(df.index)
     df.sort_index(inplace=True)
 
+    # CRIT-2 FIX: Check for excessive consecutive missing values per ticker
+    # More than 5 consecutive missing trading days indicates a data failure
+    # (not just weekends/holidays) that would be silently masked by ffill.
+    MAX_CONSEC_MISSING = 5
+    for ticker_col in df.columns:
+        series = df[ticker_col]
+        consec = 0
+        max_consec = 0
+        for is_missing in series.isna():
+            if is_missing:
+                consec += 1
+                max_consec = max(max_consec, consec)
+            else:
+                consec = 0
+        if max_consec > MAX_CONSEC_MISSING:
+            warn_msg = (
+                f"DATA QUALITY WARNING [{ticker_col}]: {max_consec} consecutive "
+                f"missing price days detected (threshold: {MAX_CONSEC_MISSING}). "
+                f"Forward-fill will mask this gap — verify yfinance data source."
+            )
+            dq_log.append(warn_msg)
+            log.warning(warn_msg)
+
     # Forward-fill then back-fill to handle weekends/holidays/trading halts
     n_before = int(df.isna().sum().sum())
     filled = df.ffill().bfill()
@@ -696,6 +764,8 @@ class DataQualityReport:
         missing_data_points: int,
         missing_tickers:  list[str],
         log_lines:        list[str],
+        rfr_warning:      str = "",
+        currency_warning: str = "",
     ):
         self.valid_tickers       = valid_tickers
         self.failed_tickers      = failed_tickers
@@ -704,6 +774,8 @@ class DataQualityReport:
         self.missing_data_points = missing_data_points
         self.missing_tickers     = missing_tickers
         self.log_lines           = log_lines
+        self.rfr_warning         = rfr_warning  # HIGH-5: non-empty = stale/fallback rate used
+        self.currency_warning    = currency_warning  # MED-5: non-empty if non-USD tickers detected
 
     def __str__(self) -> str:
         return (

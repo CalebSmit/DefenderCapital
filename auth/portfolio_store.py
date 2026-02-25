@@ -33,9 +33,26 @@ def save_portfolio(
     short_name: str,
     holdings: list[dict],
     settings: dict | None = None,
+    stress_snapshot: dict | None = None,
 ) -> tuple[bool, str]:
     """
     Upsert the user's portfolio.
+
+    Parameters
+    ----------
+    user_id : int
+        User ID
+    portfolio_name : str
+        Name of the portfolio
+    short_name : str
+        Short display name
+    holdings : list[dict]
+        Holdings data
+    settings : dict, optional
+        Portfolio settings (default: None)
+    stress_snapshot : dict, optional
+        MED-6 FIX: Stress test results snapshot to store in settings
+
     Returns (success, message).
     """
     if not isinstance(holdings, list):
@@ -44,7 +61,11 @@ def save_portfolio(
         return False, "Portfolio name cannot be empty."
 
     h_json = json_encode(holdings)
-    s_json = json_encode(settings or {})
+    s_obj = settings or {}
+    # MED-6 FIX: Merge stress snapshot into settings if provided
+    if stress_snapshot:
+        s_obj = {**s_obj, "stress_snapshot": stress_snapshot}
+    s_json = json_encode(s_obj)
     name   = portfolio_name.strip()[:100]
     short  = (short_name or "PORT").strip()[:20]
 

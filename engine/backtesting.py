@@ -48,6 +48,9 @@ class BacktestResult:
     avg_loss_in_breach:     float           # average realized loss on breach days (negative $)
     avg_es_in_breach:       float           # average ES estimate on breach days (negative $)
     es_adequacy:            str             # "ES adequate", "ES underestimates", "Too few breaches"
+    # HIGH-7 FIX: Basel traffic-light zone
+    basel_zone:             str             # "GREEN" | "YELLOW" | "RED"
+    basel_zone_note:        str             # explanation of the zone
     # Time series data
     forecast_df:            pd.DataFrame    # date, realized_pnl, var_forecast, exception
     # Interpretation
@@ -57,7 +60,7 @@ class BacktestResult:
 def compute_rolling_var_forecasts(
     market_data: MarketData,
     confidence: float = 0.95,
-    min_periods: int = 252,
+    min_periods: int = 504,
 ) -> pd.DataFrame:
     """
     Compute rolling 1-day-ahead VaR forecasts using a fixed expanding window.
@@ -73,6 +76,8 @@ def compute_rolling_var_forecasts(
         Confidence level (e.g., 0.95).
     min_periods : int
         Minimum number of observations needed to start forecasting.
+        Defaults to 504 (2 years, per Basel III recommendation). A window < 504
+        may not capture a full market cycle — results shown with a warning.
 
     Returns
     -------
@@ -238,7 +243,7 @@ def christoffersen_independence_test(exceptions: np.ndarray) -> tuple[float, flo
 def run_backtest(
     market_data: MarketData,
     confidence: float = 0.95,
-    min_periods: int = 252,
+    min_periods: int = 504,
 ) -> BacktestResult:
     """
     Run a complete VaR backtest: Kupiec POF + Christoffersen independence + ES.
@@ -278,7 +283,7 @@ def run_backtest(
         breach_mask = forecast_df['exception'] == 1
         avg_loss = forecast_df.loc[breach_mask, 'realized_pnl'].mean()
         avg_es = forecast_df.loc[breach_mask, 'var_forecast'].mean()
-        
+
         if abs(avg_loss) > abs(avg_es):
             es_adequacy = "ES underestimates"
         else:
@@ -287,7 +292,35 @@ def run_backtest(
         avg_loss = 0.0
         avg_es = 0.0
         es_adequacy = "Too few breaches"
-    
+
+    # HIGH-7 FIX: Basel traffic-light zone (based on exceptions per 250 trading days)
+    # Scaled from n_obs to normalise across different observation periods
+    exceptions_per_250 = (n_exceptions / n_obs * 250) if n_obs > 0 else 0
+    if exceptions_per_250 <= 4:
+        _basel_zone = "GREEN"
+        _basel_note = (
+            f"{n_exceptions} exceptions in {n_obs} days "
+            f"({exceptions_per_250:.1f} per 250-day equivalent). "
+            "Model is performing within Basel III green zone (0–4 exceptions per year)."
+        )
+    elif exceptions_per_250 <= 9:
+        _basel_zone = "YELLOW"
+        _basel_note = (
+            f"{n_exceptions} exceptions in {n_obs} days "
+            f"({exceptions_per_250:.1f} per 250-day equivalent). "
+            "Model is in Basel III yellow zone (5–9 exceptions). "
+            "Review model assumptions — potential VaR underestimation."
+        )
+    else:
+        _basel_zone = "RED"
+        _basel_note = (
+            f"{n_exceptions} exceptions in {n_obs} days "
+            f"({exceptions_per_250:.1f} per 250-day equivalent). "
+            "Model is in Basel III RED zone (≥10 exceptions). "
+            "VaR model is significantly underestimating risk — immediate review required."
+        )
+    log.info(f"Basel traffic light: {_basel_zone} — {_basel_note}")
+
     # Summary
     summary_parts = [
         f"VaR Backtest at {confidence:.1%} confidence level",
@@ -316,6 +349,8 @@ def run_backtest(
         avg_loss_in_breach=avg_loss,
         avg_es_in_breach=avg_es,
         es_adequacy=es_adequacy,
+        basel_zone=_basel_zone,
+        basel_zone_note=_basel_note,
         forecast_df=forecast_df,
         summary=summary,
     )

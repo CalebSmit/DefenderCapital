@@ -80,6 +80,15 @@ class SimulationResult:
     simulated_corr_max_diff: float = 0.0   # max |sim_corr − hist_corr|
     mean_return_diff:        float = 0.0   # |mean(sim) − mean(hist)|
 
+    # HIGH-1 FIX: Confidence intervals on VaR/terminal percentile estimates
+    # Bootstrap 90% CI: (ci_lo, ci_hi) pairs; 0.0 = not computed
+    var_95_ci_lo:            float = 0.0   # 5th percentile of bootstrap VaR(95%) distribution
+    var_95_ci_hi:            float = 0.0   # 95th percentile
+    var_99_ci_lo:            float = 0.0
+    var_99_ci_hi:            float = 0.0
+    p05_ci_lo:               float = 0.0   # CI on terminal 5th percentile
+    p05_ci_hi:               float = 0.0
+
 
 def run_simulation(
     market_data:      MarketData,
@@ -115,7 +124,9 @@ def run_simulation(
     n_days : int
         Trading days to simulate forward. 252 = 1 year.
     seed : int, optional
-        Random seed for reproducibility. None for fully random.
+        Random seed for reproducibility. Default=42 for production consistency.
+        Set to None for fully random results. IMPORTANT: Use a fixed seed when
+        generating audit reports or backtests to ensure reproducibility.
 
     Returns
     -------
@@ -258,6 +269,30 @@ def run_simulation(
         f"1Y VaR(95%)=${var_95:,.0f}"
     )
 
+    # ── HIGH-1 FIX: Bootstrap confidence intervals on VaR estimates ──────────────
+    # Resample terminal values to estimate uncertainty in VaR percentiles
+    N_BOOTSTRAP = 500
+    rng_boot = np.random.default_rng(seed if seed is not None else 99)
+    boot_var95 = np.zeros(N_BOOTSTRAP)
+    boot_var99 = np.zeros(N_BOOTSTRAP)
+    boot_p05   = np.zeros(N_BOOTSTRAP)
+    for _b in range(N_BOOTSTRAP):
+        _sample = rng_boot.choice(terminal_values, size=len(terminal_values), replace=True)
+        _ret_s  = (_sample - initial_value) / initial_value
+        boot_var95[_b] = float(np.percentile(_ret_s, 5)  * initial_value)
+        boot_var99[_b] = float(np.percentile(_ret_s, 1)  * initial_value)
+        boot_p05[_b]   = float(np.percentile(_sample, 5))
+    _var95_ci_lo = float(np.percentile(boot_var95, 5))
+    _var95_ci_hi = float(np.percentile(boot_var95, 95))
+    _var99_ci_lo = float(np.percentile(boot_var99, 5))
+    _var99_ci_hi = float(np.percentile(boot_var99, 95))
+    _p05_ci_lo   = float(np.percentile(boot_p05, 5))
+    _p05_ci_hi   = float(np.percentile(boot_p05, 95))
+    log.info(
+        f"MC VaR(95%) bootstrap CI: [{_var95_ci_lo:,.0f}, {_var95_ci_hi:,.0f}] "
+        f"VaR(99%): [{_var99_ci_lo:,.0f}, {_var99_ci_hi:,.0f}]"
+    )
+
     result = SimulationResult(
         terminal_values=terminal_values,
         percentile_paths=percentile_paths,
@@ -284,6 +319,12 @@ def run_simulation(
         cvar_es=cvar_es,
         simulated_corr_max_diff=0.0,   # hard to compute post-aggregation
         mean_return_diff=mean_return_diff,
+        var_95_ci_lo=_var95_ci_lo,
+        var_95_ci_hi=_var95_ci_hi,
+        var_99_ci_lo=_var99_ci_lo,
+        var_99_ci_hi=_var99_ci_hi,
+        p05_ci_lo=_p05_ci_lo,
+        p05_ci_hi=_p05_ci_hi,
     )
     return result
 

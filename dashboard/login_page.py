@@ -91,6 +91,8 @@ def _logo() -> None:
 
 def _render_login() -> None:
     """Login form tab."""
+    from auth.database import is_account_locked, check_and_record_login_attempt
+    
     with st.form("dcm_login_form", clear_on_submit=False):
         identifier = st.text_input(
             "Username or Email",
@@ -108,13 +110,29 @@ def _render_login() -> None:
             st.error("Please enter your username/email and password.")
             return
 
+        # Check if account is locked before attempting auth
+        lock_status = is_account_locked(identifier.strip())
+        if lock_status["locked"]:
+            mins_remaining = int(lock_status["lockout_seconds_remaining"] / 60) + 1
+            st.error(f"Account locked due to too many failed attempts. Try again in {mins_remaining} minutes.")
+            return
+
         user = login_user(identifier.strip(), password)
         if user:
+            # Successful login: reset the counter
+            check_and_record_login_attempt(identifier.strip(), success=True)
             st.session_state["dcm_user"]          = user
             st.session_state["dcm_authenticated"] = True
             st.rerun()
         else:
-            st.error("Incorrect username/email or password.")
+            # Failed login: record the attempt
+            attempt_status = check_and_record_login_attempt(identifier.strip(), success=False)
+            if attempt_status["locked"]:
+                mins = int(attempt_status["lockout_seconds"] / 60)
+                st.error(f"Incorrect username/email or password. Account locked for {mins} minutes.")
+            else:
+                remaining = attempt_status["remaining_attempts"]
+                st.error(f"Incorrect username/email or password. {remaining} attempts remaining before lockout.")
 
 
 def _render_register() -> None:

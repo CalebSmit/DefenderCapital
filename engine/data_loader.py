@@ -103,6 +103,8 @@ class LoadResult:
     warnings:       list[str] = field(default_factory=list)
     errors:         list[str] = field(default_factory=list)
     skipped_rows:   list[int] = field(default_factory=list)
+    # MED-1 FIX: Type-coercion failure details (shown as data quality warnings)
+    type_warnings:  list[str] = field(default_factory=list)
 
     @property
     def is_valid(self) -> bool:
@@ -320,9 +322,15 @@ def _validate_row(
     shares_raw = row.get(col_map["shares"])
     shares = _parse_positive_int(shares_raw)
     if shares is None:
+        # MED-1 FIX: Clearer error with type hint
+        _type_hint = ""
+        if isinstance(shares_raw, str) and any(c.isalpha() for c in str(shares_raw)):
+            _type_hint = (
+                f" (found text '{shares_raw}' — enter a number like 100, not '100 shares')"
+            )
         errors.append(
             f"Row {row_num} ({ticker}): Shares Held must be a positive whole number, "
-            f"got '{shares_raw}'. Row skipped."
+            f"got '{shares_raw}'{_type_hint}. Row skipped."
         )
         return None, warnings, errors
 
@@ -425,7 +433,15 @@ def _parse_settings(xls: pd.ExcelFile) -> PortfolioSettings:
             elif param == "covariance_mode":
                 settings.covariance_mode = str(val).strip().lower()
             elif param == "ewma_lambda":
-                settings.ewma_lambda = float(val)
+                # MED-4 FIX: Validate EWMA lambda is in acceptable range
+                lam = float(val)
+                if not (0.85 <= lam <= 0.99):
+                    log.warning(
+                        f"Settings: ewma_lambda={lam:.3f} is outside recommended range "
+                        f"[0.85, 0.99]. Using 0.94 (RiskMetrics standard)."
+                    )
+                    lam = 0.94
+                settings.ewma_lambda = lam
             elif param == "mc_shock_distribution":
                 settings.mc_shock_distribution = str(val).strip().lower()
             elif param == "mc_df":

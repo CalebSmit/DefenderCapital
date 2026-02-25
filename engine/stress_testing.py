@@ -340,6 +340,7 @@ def run_all_stress_tests(
     results.hypothetical.append(_sector_blowup_scenario(market_data))
     results.hypothetical.append(_largest_position_zero(market_data))
     results.hypothetical.append(_correlation_spike_scenario(market_data))
+    results.hypothetical.append(_extreme_correlation_scenario(market_data))
     results.hypothetical.append(_custom_drawdown_scenario(market_data, custom_drawdown))
 
     # ── Phase 5: ES comparison & severity labelling ────────────────────────────
@@ -642,12 +643,14 @@ def _correlation_spike_scenario(market_data: MarketData) -> ScenarioResult:
 
     individual_vols = log_rets.std().values   # daily std devs
 
-    # Stress covariance matrix: σ_i × σ_j × ρ  (ρ = 0.70 for off-diagonal)
+    # Stress covariance matrix: σ_i × σ_j × ρ  (ρ for off-diagonal)
     # In crisis regimes, both correlations AND volatilities spike.
     # Empirically, equity vols increase ~1.5-2x during panic events
     # (e.g., VIX averaged ~35% in 2008 vs ~15% normally → ~2.3x multiplier).
     # We use a conservative 1.5x vol multiplier alongside the correlation spike.
-    SPIKE_CORR = 0.70
+    # HIGH-4 FIX: Updated from 0.70 to 0.95 (empirical 2008/2020 equity crisis correlations)
+    # Research shows US equity correlations averaged 0.82-0.95 during peak panic phases
+    SPIKE_CORR = 0.95
     VOL_SPIKE_MULT = 1.5   # conservative; 2008 was closer to 2.0-2.5x
     n = len(tickers)
     stressed_vols = individual_vols * VOL_SPIKE_MULT
@@ -694,10 +697,11 @@ def _correlation_spike_scenario(market_data: MarketData) -> ScenarioResult:
         si.pct_of_total_loss = safe_divide(si.dollar_loss, total_loss) * 100 if total_loss < 0 else 0.0
 
     return ScenarioResult(
-        name="Correlation Spike (ρ = 0.70)",
+        name="Correlation Spike (ρ = 0.95)",
         description=(
-            "All pairwise stock correlations jump to 0.70, simulating a 'risk-off' panic "
-            "where all assets sell off together. Diversification benefits evaporate."
+            "All pairwise stock correlations jump to 0.95, simulating peak 'risk-off' panic "
+            "(consistent with 2008 GFC and March 2020 empirical data). "
+            "Diversification benefits near-completely evaporate."
         ),
         period="Hypothetical",
         methodology=(
@@ -707,8 +711,8 @@ def _correlation_spike_scenario(market_data: MarketData) -> ScenarioResult:
             f"Baseline portfolio VaR multiplied by {var_ratio:.1f}x under stress."
         ),
         assumptions=(
-            "Correlation of 0.70 is conservative for panic scenarios; actual correlations "
-            "during the 2008 GFC averaged ~0.82 for US equities. "
+            "Correlation of 0.95 reflects empirical peak panic data (2008 GFC: ~0.82–0.95, "
+            "March 2020: ~0.88–0.95 for US large-cap equities). "
             "Individual stock volatilities are multiplied by 1.5x (conservative; 2008 was ~2-2.5x). "
             "Actual crisis dynamics involve feedback loops, forced selling, and liquidity withdrawal "
             "that simple correlation/volatility shocks cannot fully capture."
@@ -723,6 +727,97 @@ def _correlation_spike_scenario(market_data: MarketData) -> ScenarioResult:
             f"(from ${abs(var_base):,.0f} to ${abs(var_stress):,.0f}). "
             f"This highlights that the portfolio's true diversification benefit depends heavily "
             f"on correlations remaining below crisis levels."
+        ),
+    )
+
+
+def _extreme_correlation_scenario(market_data: MarketData) -> ScenarioResult:
+    """
+    Extreme Correlation: all pairwise correlations = 0.99 (near-perfect comovement).
+
+    Represents a true systemic panic where all diversification vanishes.
+    Used to stress-test the absolute worst-case correlation assumption.
+    """
+    from scipy.stats import norm
+    from engine.risk_metrics import TRADING_DAYS
+
+    md      = market_data
+    tickers = md.portfolio_tickers
+    prices  = md.prices[tickers].dropna(how="all")
+    log_rets = np.log(prices / prices.shift(1)).dropna()
+
+    weights = md.weights.reindex(tickers).fillna(0).values.astype(float)
+    weights = weights / weights.sum()
+
+    individual_vols = log_rets.std().values
+
+    SPIKE_CORR = 0.99
+    VOL_SPIKE_MULT = 2.0   # 2008 peak vol spike was ~2.0–2.5x
+    n = len(tickers)
+    stressed_vols = individual_vols * VOL_SPIKE_MULT
+    corr_stress = np.full((n, n), SPIKE_CORR)
+    np.fill_diagonal(corr_stress, 1.0)
+    cov_stress = corr_stress * np.outer(stressed_vols, stressed_vols)
+
+    port_value = md.total_portfolio_value
+    port_var_stress = float(weights @ cov_stress @ weights)
+    port_std_stress = np.sqrt(port_var_stress) * np.sqrt(TRADING_DAYS)
+
+    cov_base      = log_rets.cov().values
+    port_var_base = float(weights @ cov_base @ weights)
+    port_std_base = np.sqrt(port_var_base) * np.sqrt(TRADING_DAYS)
+
+    z_99  = abs(norm.ppf(0.01))
+    mean_daily = float(log_rets.mean().values @ weights)
+    var_stress  = -(mean_daily - z_99 * np.sqrt(port_var_stress)) * port_value
+    var_base    = -(mean_daily - z_99 * np.sqrt(port_var_base)) * port_value
+    var_ratio   = safe_divide(abs(var_stress), abs(var_base))
+
+    stock_impacts = []
+    total_loss = 0.0
+    for i, h in enumerate(md.holdings):
+        if h.ticker not in tickers:
+            continue
+        marg = (cov_stress @ weights)[i] / np.sqrt(port_var_stress)
+        comp_loss = -weights[i] * z_99 * marg * port_value
+        total_loss += comp_loss
+        stock_impacts.append(StockScenarioImpact(
+            ticker=h.ticker,
+            company_name=h.company_name,
+            sector=h.sector,
+            weight=h.weight,
+            scenario_drawdown=-weights[i] * z_99 * np.sqrt(cov_stress[i, i]),
+            dollar_loss=comp_loss,
+            pct_of_total_loss=0.0,
+        ))
+    for si in stock_impacts:
+        si.pct_of_total_loss = safe_divide(si.dollar_loss, total_loss) * 100 if total_loss < 0 else 0.0
+
+    return ScenarioResult(
+        name="Extreme Correlation (ρ = 0.99)",
+        description=(
+            "All pairwise correlations jump to 0.99 with 2x volatility spike — "
+            "a near-complete systemic breakdown where all diversification vanishes."
+        ),
+        period="Hypothetical — Extreme Tail",
+        methodology=(
+            "Covariance matrix built from individual volatilities (×2.0 spike multiplier) "
+            f"and uniform off-diagonal correlation of 0.99. VaR(99%) multiplied by {var_ratio:.1f}x."
+        ),
+        assumptions=(
+            "Represents an absolute worst-case — beyond any observed historical scenario. "
+            "Intended as a regulatory-style extreme tail stress test. "
+            "Volatility multiplier of 2.0x reflects 2008 GFC peak levels."
+        ),
+        portfolio_loss_pct=safe_divide(total_loss, port_value),
+        portfolio_loss_usd=total_loss,
+        benchmark_loss_pct=-z_99 * port_std_stress / np.sqrt(TRADING_DAYS),
+        portfolio_value=port_value,
+        stock_impacts=stock_impacts,
+        interpretation=(
+            f"Under extreme correlation (0.99), portfolio VaR(99%) increases by {var_ratio:.1f}x "
+            f"(from ${abs(var_base):,.0f} to ${abs(var_stress):,.0f}). "
+            f"This represents near-complete loss of diversification benefit."
         ),
     )
 

@@ -55,6 +55,7 @@ class StockRiskMetrics:
     component_var_95:    float   # contribution to portfolio 95% VaR
     marginal_var_95:     float   # marginal VaR at 95%
     risk_contribution_pct: float # % of total portfolio risk
+    component_var_note:  str     = ""  # CRIT-4: explanation when component VaR is negative (diversifier)
 
 
 @dataclass
@@ -64,10 +65,16 @@ class VaRResult:
     parametric_var: float   # normal-distribution VaR (dollar, positive = loss)
     historical_var: float   # empirical percentile VaR (dollar, negative)
     mc_var:         float   # Monte Carlo VaR (dollar, negative, filled later)
-    parametric_cvar: float  # Expected Shortfall — parametric
-    historical_cvar: float  # Expected Shortfall — historical
-    mc_cvar:         float  = 0.0  # filled by monte_carlo.py
-    cornish_fisher_var: float = 0.0  # skewness/kurtosis-adjusted VaR
+    # Expected Shortfall (ES / CVaR) — all at the specified confidence level
+    # FRTB IMA standard: ES at 97.5% confidence (≈ parametric VaR at 99% for normal dist)
+    # Note: This class stores ES for any confidence; the FRTB-aligned ES uses
+    # confidence=0.975 (configured via settings.es_confidence_level)
+    parametric_cvar: float  # Expected Shortfall — parametric normal model (ES = CVaR)
+    historical_cvar: float  # Expected Shortfall — historical/empirical
+    mc_cvar:         float  = 0.0  # Expected Shortfall — Monte Carlo (filled by monte_carlo.py)
+    cornish_fisher_var: float = 0.0  # Cornish-Fisher VaR (skewness/kurtosis-adjusted)
+    # FRTB compliance note: all ES figures at 97.5% are FRTB IMA-standard.
+    # At 97.5%, ES ≈ 99% VaR for normally-distributed returns.
 
     @property
     def worst_parametric(self) -> float:
@@ -119,6 +126,9 @@ class PortfolioRiskMetrics:
     # Distribution
     skewness:                float
     kurtosis:                float
+    # HIGH-6: Normality test result
+    normality_pvalue:        float = 1.0   # Jarque-Bera p-value (< 0.05 = non-normal)
+    normality_warning:       str   = ""    # non-empty if normality rejected at 5% level
     # Per-stock detail
     stock_metrics:           list[StockRiskMetrics] = field(default_factory=list)
     # Correlation
@@ -397,6 +407,17 @@ def cornish_fisher_var(
     S = skewness
     K = excess_kurtosis
 
+    # MED-9 FIX: Cornish-Fisher expansion is unreliable for extreme skewness/kurtosis
+    # The expansion is a 3rd-order approximation that breaks down at extreme moments
+    _cf_valid = True
+    if abs(S) > 2.0 or abs(K) > 6.0:
+        _cf_valid = False
+        log.warning(
+            f"Cornish-Fisher expansion may be unreliable: "
+            f"skewness={S:.2f} (|S|>2 threshold), excess_kurtosis={K:.2f} (|K|>6 threshold). "
+            f"Result should be treated as an approximation only."
+        )
+
     # Cornish-Fisher adjusted quantile
     z_cf = (z
             + (z**2 - 1) * S / 6
@@ -630,7 +651,15 @@ def ewma_covariance(log_rets: pd.DataFrame, lam: float = 0.94) -> np.ndarray:
     """
     data   = log_rets.values.astype(float)   # (T, N)
     T, N   = data.shape
-    cov    = np.cov(data[:20].T, ddof=1) if T >= 20 else np.eye(N) * 0.01  # warmup
+    # HIGH-2 FIX: Use 252-day warmup (was 20). With λ=0.94, half-life ≈ 11 days
+    # but covariance matrix stabilisation requires ~252 days (Basel/RiskMetrics standard).
+    WARMUP = min(252, T)
+    if T < 252:
+        log.warning(
+            f"EWMA warmup: only {T} days of data available (recommend ≥252). "
+            f"Falling back to sample covariance for initialisation."
+        )
+    cov    = np.cov(data[:WARMUP].T, ddof=1) if WARMUP >= 2 else np.eye(N) * 0.01
     for t in range(1, T):
         r   = data[t - 1:t].T   # (N, 1)
         cov = lam * cov + (1 - lam) * (r @ r.T)
@@ -683,6 +712,15 @@ def compute_all_metrics(market_data: MarketData, settings=None) -> PortfolioRisk
     p_value = md.total_portfolio_value
     tickers = md.portfolio_tickers
 
+    # HIGH-3 FIX: Single-stock portfolio guard
+    # Covariance, correlation, and diversification metrics require ≥2 assets
+    _single_stock_mode = len(tickers) < 2
+    if _single_stock_mode:
+        log.warning(
+            "Single-stock portfolio detected. Covariance/correlation/diversification "
+            "metrics are not meaningful and will be set to neutral placeholder values."
+        )
+
     log.info(f"Computing risk metrics for {len(tickers)} tickers, portfolio value ${p_value:,.0f}")
 
     # ── Return series ──────────────────────────────────────────────────────────
@@ -700,19 +738,33 @@ def compute_all_metrics(market_data: MarketData, settings=None) -> PortfolioRisk
     bench_ret   = bench_log_rets.loc[common_idx]
     port_ret    = (log_rets * weights).sum(axis=1)
 
+    # CRIT-3 FIX: Compute simple returns for historical VaR
+    # For historical VaR, we need portfolio simple return (not weighted sum of simple returns).
+    # Correct formula: simple_port_return = exp(log_port_return) - 1
+    # This matches the empirical return and avoids mixing log and simple returns.
+    # Log returns are still correct for covariance, volatility, beta, parametric VaR.
+    port_ret_simple = port_ret.apply(lambda x: np.exp(x) - 1)
+
     # ── Covariance matrix ─────────────────────────────────────────────────────
-    # Use covariance_mode from settings (Ledoit-Wolf or EWMA)
-    covariance_mode = s.covariance_mode.lower().strip()
-    if covariance_mode == "ewma":
-        cov_daily = ewma_covariance(log_rets, lam=s.ewma_lambda).astype(float)
-        log.info(f"Covariance mode: EWMA (λ={s.ewma_lambda:.2f})")
+    # HIGH-3 FIX: Guard for single-stock portfolios (covariance needs ≥2 assets)
+    if _single_stock_mode:
+        # Single stock: variance only
+        cov_daily = np.array([[float(log_rets.iloc[:, 0].var(ddof=1))]])
+        daily_stds = np.sqrt(np.diag(cov_daily))
+        corr_mat = pd.DataFrame([[1.0]], index=log_rets.columns, columns=log_rets.columns)
+        corr_values = corr_mat.values
     else:
-        cov_daily = ledoit_wolf_covariance(log_rets).astype(float)
-    # Derive the correlation matrix from the shrunk covariance
-    daily_stds = np.sqrt(np.diag(cov_daily))
-    corr_values = cov_daily / np.outer(daily_stds, daily_stds)
-    np.fill_diagonal(corr_values, 1.0)  # ensure exact 1.0 on diagonal
-    corr_mat = pd.DataFrame(corr_values, index=log_rets.columns, columns=log_rets.columns)
+        covariance_mode = s.covariance_mode.lower().strip()
+        if covariance_mode == "ewma":
+            cov_daily = ewma_covariance(log_rets, lam=s.ewma_lambda).astype(float)
+            log.info(f"Covariance mode: EWMA (λ={s.ewma_lambda:.2f})")
+        else:
+            cov_daily = ledoit_wolf_covariance(log_rets).astype(float)
+        # Derive the correlation matrix from the shrunk covariance
+        daily_stds = np.sqrt(np.diag(cov_daily))
+        corr_values = cov_daily / np.outer(daily_stds, daily_stds)
+        np.fill_diagonal(corr_values, 1.0)  # ensure exact 1.0 on diagonal
+        corr_mat = pd.DataFrame(corr_values, index=log_rets.columns, columns=log_rets.columns)
 
     port_daily_var = float(w_arr @ cov_daily @ w_arr)
     port_daily_std = np.sqrt(port_daily_var)
@@ -731,7 +783,8 @@ def compute_all_metrics(market_data: MarketData, settings=None) -> PortfolioRisk
     var_results: dict[float, VaRResult] = {}
     for conf in sorted(set([0.95, 0.99, es_conf])):
         p_var, p_cvar = parametric_var(p_value, float(port_ret.mean()), port_daily_std, conf)
-        h_var, h_cvar = historical_var(port_ret.apply(lambda x: np.exp(x)-1), p_value, conf)
+        # CRIT-3 FIX: Use simple portfolio returns for historical VaR (no log/simple mixing)
+        h_var, h_cvar = historical_var(port_ret_simple, p_value, conf)
         cf_var = cornish_fisher_var(
             p_value, float(port_ret.mean()), port_daily_std,
             conf, port_skew, port_kurt,
@@ -760,8 +813,13 @@ def compute_all_metrics(market_data: MarketData, settings=None) -> PortfolioRisk
     indiv_vols = np.array([
         float(log_rets[t].std(ddof=1) * np.sqrt(TRADING_DAYS)) for t in tickers
     ])
-    div_ratio = diversification_ratio(w_arr, indiv_vols, port_ann_vol)
-    avg_corr  = float(corr_mat.values[np.triu_indices_from(corr_mat.values, k=1)].mean())
+    # HIGH-3 FIX: Diversification ratio and avg correlation are undefined for single stock
+    if _single_stock_mode:
+        div_ratio = 1.0  # no diversification by definition
+        avg_corr  = 1.0  # single stock: correlation with itself is 1
+    else:
+        div_ratio = diversification_ratio(w_arr, indiv_vols, port_ann_vol)
+        avg_corr  = float(corr_mat.values[np.triu_indices_from(corr_mat.values, k=1)].mean())
 
     # ── Component VaR ─────────────────────────────────────────────────────────
     mean_daily_rets = log_rets.mean().reindex(tickers).values.astype(float)
@@ -814,6 +872,16 @@ def compute_all_metrics(market_data: MarketData, settings=None) -> PortfolioRisk
         name    = holding.company_name if holding else ticker
         sector  = holding.sector       if holding else "Unknown"
 
+        # CRIT-4 FIX: Generate sign convention note for negative Component VaR
+        _cvvar = float(comp_var_95[i])
+        _cvnote = ""
+        if _cvvar < 0:
+            _cvnote = (
+                "Negative Component VaR: this position actively REDUCES portfolio risk. "
+                "Its low or negative correlation with other holdings offsets portfolio "
+                "volatility (Euler decomposition). This is a diversifier, not an error."
+            )
+
         stock_metrics_list.append(StockRiskMetrics(
             ticker=ticker,
             company_name=name,
@@ -831,9 +899,10 @@ def compute_all_metrics(market_data: MarketData, settings=None) -> PortfolioRisk
             roll_vol_30d=rv_30,
             roll_vol_90d=rv_90,
             annualized_return=s_ann_ret,
-            component_var_95=float(comp_var_95[i]),
+            component_var_95=_cvvar,
             marginal_var_95=float(marg_var_95[i]),
             risk_contribution_pct=risk_contrib_pct,
+            component_var_note=_cvnote,
         ))
 
     log.info(
@@ -841,6 +910,22 @@ def compute_all_metrics(market_data: MarketData, settings=None) -> PortfolioRisk
         f"VaR(95%)=${var_results[0.95].parametric_var:,.0f}, "
         f"ES({es_conf:.1%})=${var_results[es_conf].parametric_cvar:,.0f}"
     )
+
+    # ── HIGH-6 FIX: Jarque-Bera normality test ────────────────────────────────
+    from scipy.stats import jarque_bera
+    _jb_stat, _jb_pval = jarque_bera(port_ret.dropna().values)
+    _jb_pval = float(_jb_pval)
+    _normality_warning = ""
+    if _jb_pval < 0.05:
+        _normality_warning = (
+            f"Return distribution is NON-NORMAL (Jarque-Bera p={_jb_pval:.4f} < 0.05). "
+            f"Skewness={port_skew:.2f}, Excess Kurtosis={port_kurt:.2f}. "
+            f"Parametric VaR (which assumes normality) may UNDERSTATE tail risk. "
+            f"Prefer Historical or Cornish-Fisher VaR for this portfolio."
+        )
+        log.warning(_normality_warning)
+    else:
+        log.info(f"Normality test: PASS (Jarque-Bera p={_jb_pval:.4f})")
 
     return PortfolioRiskMetrics(
         total_value=p_value,
@@ -865,6 +950,8 @@ def compute_all_metrics(market_data: MarketData, settings=None) -> PortfolioRisk
         stock_metrics=stock_metrics_list,
         correlation_matrix=corr_mat,
         n_pca_factors_90pct=n_pca,
+        normality_pvalue=_jb_pval,
+        normality_warning=_normality_warning,
     )
 
 

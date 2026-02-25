@@ -54,7 +54,11 @@ if not render_auth_gate():
 
 # ── auto-load saved portfolio on first login this session ────────────────────
 _dcm_user = current_user()
-if _dcm_user and not st.session_state.get("dcm_portfolio_loaded"):
+# HIGH-8 FIX: Namespace session state by user ID
+_user_key = str(_dcm_user["id"]) if _dcm_user else "anon"
+_portfolio_loaded_key = f"dcm_portfolio_loaded_{_user_key}"
+
+if _dcm_user and not st.session_state.get(_portfolio_loaded_key):
     _saved = _db_load_portfolio(_dcm_user["id"])
     if _saved and _saved["holdings"]:
         import hashlib, tempfile as _tmpmod
@@ -77,7 +81,7 @@ if _dcm_user and not st.session_state.get("dcm_portfolio_loaded"):
             _load_all_needs_clear = False
     else:
         _load_all_needs_clear = False
-    st.session_state["dcm_portfolio_loaded"] = True
+    st.session_state[_portfolio_loaded_key] = True
     if _load_all_needs_clear:
         # clear after setting session state so the rerun picks it up
         try:
