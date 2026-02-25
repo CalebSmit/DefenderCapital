@@ -3,7 +3,7 @@ import sys, time, shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from engine.utils import AuditLog, EXPORTS_DIR, get_cache_path, CACHE_DIR
+from engine.utils import AuditLog, EXPORTS_DIR
 from engine.data_loader import load_portfolio
 from engine.market_data import fetch_market_data, update_excel_prices
 
@@ -62,19 +62,15 @@ except Exception as e:
     audit.record("Market data fetch (live)", "FAIL", str(e))
     md = None
 
-# ── Test 4: Cache test ──────────────────────────────────────────────────────
+# ── Test 4: Second fetch (no caching — always fresh) ──────────────────────
 try:
     t1 = time.perf_counter()
     md2 = fetch_market_data(result)
     elapsed_second = time.perf_counter() - t1
-    ratio = elapsed_first / max(elapsed_second, 0.01)
-    detail = f"First run: {elapsed_first:.2f}s | Cached run: {elapsed_second:.2f}s | Speedup: {ratio:.1f}x"
-    if elapsed_second < elapsed_first * 0.5 or elapsed_second < 5.0:
-        audit.record("Cache speedup test", "PASS", detail)
-    else:
-        audit.record("Cache speedup test", "WARN", detail + "\n  Cache may not be working optimally")
+    detail = f"First run: {elapsed_first:.2f}s | Second run: {elapsed_second:.2f}s"
+    audit.record("Second fetch test", "PASS", detail)
 except Exception as e:
-    audit.record("Cache speedup test", "FAIL", str(e))
+    audit.record("Second fetch test", "FAIL", str(e))
 
 # ── Test 5: Auto-populated fields ──────────────────────────────────────────
 try:

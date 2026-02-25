@@ -66,7 +66,6 @@ class PortfolioSettings:
     lookback_years:           int   = 2
     simulation_paths:         int   = 10_000
     simulation_days:          int   = 252
-    cache_expiry_hours:       int   = 24
     stress_custom_drawdown:   float = -0.20
     report_title:             str   = "Defender Capital Management — Portfolio Risk Report"
     color_primary:            str   = "#1B2A4A"
@@ -409,7 +408,7 @@ def _parse_settings(xls: pd.ExcelFile) -> PortfolioSettings:
             elif param == "simulation_days":
                 settings.simulation_days = int(float(val))
             elif param == "cache_expiry_hours":
-                settings.cache_expiry_hours = int(float(val))
+                pass  # cache_expiry_hours is no longer used; ignore for backwards compat
             elif param == "stress_custom_drawdown" or param == "stress_test_custom_drawdown":
                 settings.stress_custom_drawdown = float(val)
             elif param == "report_title":
@@ -485,7 +484,6 @@ def save_settings(settings: PortfolioSettings, excel_path: Optional[Path] = None
         "lookback_years":           settings.lookback_years,
         "simulation_paths":         settings.simulation_paths,
         "simulation_days":          settings.simulation_days,
-        "cache_expiry_hours":       settings.cache_expiry_hours,
         "stress_custom_drawdown":   settings.stress_custom_drawdown,
         "report_title":             settings.report_title,
         "color_primary":            settings.color_primary,

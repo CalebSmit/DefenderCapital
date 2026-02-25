@@ -252,7 +252,6 @@ settings = [
     ("lookback_years",           2,        2,        "Years of historical price data to download. 2 years = ~504 trading days. Increase to 5 for more stability."),
     ("simulation_paths",         10000,    10000,    "Number of Monte Carlo simulation paths. 10,000 is standard. Increase to 50,000 for smoother results (slower run)."),
     ("simulation_days",          252,      252,      "Number of trading days to simulate forward. 252 = 1 year."),
-    ("cache_expiry_hours",       24,       24,       "Hours before cached price data is considered stale. 24 = refresh once per day. Set to 0 to always re-download."),
     ("stress_custom_drawdown",   -0.20,    -0.20,    "Custom stress test scenario: uniform portfolio drawdown. -0.20 = down 20%. Change to any negative decimal."),
     ("report_title",             "Defender Capital Management — Portfolio Risk Report", "Defender Capital Management — Portfolio Risk Report", "Title that appears on generated reports."),
     ("color_primary",            "#1B2A4A","#1B2A4A","Primary brand color (dark navy). Used in report headers and dashboard."),

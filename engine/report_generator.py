@@ -63,8 +63,13 @@ def _init_sector_weights() -> dict[str, float]:
     try:
         from engine.market_data import fetch_sp500_sector_weights
         live = fetch_sp500_sector_weights()
-        if live:
+        if live and len(live) == len(_SP500_SECTOR_WEIGHTS_FALLBACK):
             return live
+        elif live:
+            log.warning(
+                f"Live sector weights have {len(live)} sectors "
+                f"(expected {len(_SP500_SECTOR_WEIGHTS_FALLBACK)}), using fallback"
+            )
     except Exception:
         pass
     return _SP500_SECTOR_WEIGHTS_FALLBACK

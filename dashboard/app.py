@@ -83,11 +83,6 @@ if _dcm_user and not st.session_state.get(_portfolio_loaded_key):
         _load_all_needs_clear = False
     st.session_state[_portfolio_loaded_key] = True
     if _load_all_needs_clear:
-        # clear after setting session state so the rerun picks it up
-        try:
-            _load_all.clear()
-        except Exception:
-            pass
         st.rerun()
 
 # ── brand colours (Broadsheet palette) ────────────────────────────────────
@@ -765,15 +760,11 @@ def _generate_template_bytes() -> bytes:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# DATA LOADING  (cached so refresh only on button click)
+# DATA LOADING  (always fresh — no caching)
 # ════════════════════════════════════════════════════════════════════════════
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def _load_all(_portfolio_hash: str = ""):
-    """Load portfolio, market data, and run all analytics. Returns a dict.
-
-    _portfolio_hash is used only to bust the cache when a new file is uploaded.
-    """
+def _load_all():
+    """Load portfolio, market data, and run all analytics. Returns a dict."""
     excel_path = None
     if "uploaded_portfolio_path" in st.session_state:
         excel_path = Path(st.session_state["uploaded_portfolio_path"])
@@ -808,10 +799,7 @@ def _load_all(_portfolio_hash: str = ""):
 
 
 def get_data(force_refresh: bool = False):
-    if force_refresh:
-        _load_all.clear()
-    portfolio_hash = st.session_state.get("uploaded_portfolio_hash", "")
-    return _load_all(_portfolio_hash=portfolio_hash)
+    return _load_all()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -861,7 +849,7 @@ def _generate_system_prompt(data: dict) -> str:
         "",
         f"## Current Portfolio: {settings.portfolio_name}",
         f"Data as of {pd.Timestamp.now().strftime('%B %d, %Y')}."
-        f" Cache refreshes every {getattr(settings, 'cache_expiry_hours', 1)} hour(s).",
+        f" All data is fetched fresh on each page load.",
         f"Holdings: {len(load_result.holdings)} positions."
         f" Top 5 by weight: {top5_str}.",
         "",
@@ -1079,9 +1067,8 @@ def render_chatbot_widget(data: dict) -> None:
         pass  # never crash the dashboard over the chatbot
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def _load_settings_quick(_hash: str = "") -> dict:
-    """Load just settings from Excel as a plain dict (immune to stale class cache)."""
+def _load_settings_quick() -> dict:
+    """Load just settings from Excel as a plain dict."""
     defaults = {
         "portfolio_name": "Defender Capital Management",
         "portfolio_short_name": "DCM",
@@ -1104,9 +1091,8 @@ def _load_settings_quick(_hash: str = "") -> dict:
         return defaults
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
 def _fetch_sector_etf_prices() -> pd.DataFrame:
-    """Fetch 13 months of price history for all sector ETFs (cached 1 hour)."""
+    """Fetch 13 months of price history for all sector ETFs."""
     import yfinance as yf
     import importlib, engine.report_generator as _rg_mod
     importlib.reload(_rg_mod)
@@ -1214,9 +1200,7 @@ SECTOR_COLORS = {
 # SIDEBAR
 # ════════════════════════════════════════════════════════════════════════════
 
-_quick_settings = _load_settings_quick(
-    _hash=st.session_state.get("uploaded_portfolio_hash", ""),
-)
+_quick_settings = _load_settings_quick()
 
 with st.sidebar:
     st.markdown(f"""
@@ -1287,7 +1271,6 @@ with st.sidebar:
     st.divider()
     refresh_clicked = st.button("Refresh Data", use_container_width=True)
     if refresh_clicked:
-        _load_all.clear()
         st.rerun()
 
     # ── Portfolio upload ───────────────────────────────────────────────
@@ -1328,7 +1311,6 @@ with st.sidebar:
             tmp_path.write_bytes(file_bytes)
             st.session_state["uploaded_portfolio_path"] = str(tmp_path)
             st.session_state["uploaded_portfolio_hash"] = file_hash
-            _load_all.clear()
             st.rerun()
 
     if "uploaded_portfolio_hash" in st.session_state:
@@ -1336,7 +1318,6 @@ with st.sidebar:
         if st.button("Reset to default", use_container_width=True):
             st.session_state.pop("uploaded_portfolio_path", None)
             st.session_state.pop("uploaded_portfolio_hash", None)
-            _load_all.clear()
             st.rerun()
 
     # ── Save portfolio to database ──────────────────────────────────────
@@ -1523,7 +1504,7 @@ Column names are matched by substring — "Ticker Symbol", "Total Shares", "Per-
 2. Or edit `data/portfolio_holdings.xlsx` directly and click **Refresh Data**
 3. Navigate to **Portfolio Overview** to begin
 
-The engine fetches live prices from Yahoo Finance (cached 24 hours). First load may take 15-30 seconds.
+The engine fetches live prices from Yahoo Finance on every page load. First load may take 15-30 seconds.
     """)
 
     st.stop()
@@ -1699,7 +1680,6 @@ if page == "Manual Entry":
             st.session_state["uploaded_portfolio_path"] = str(_tmp_path)
             st.session_state["uploaded_portfolio_hash"] = _file_hash
             st.session_state.pop("_util_page", None)
-            _load_all.clear()
             st.rerun()
 
     st.stop()
@@ -1825,10 +1805,6 @@ if page == "Settings":
     with st.expander("Advanced Settings"):
         col1, col2 = st.columns(2)
         with col1:
-            new_cache = st.number_input(
-                "Cache Expiry (hours)", value=current.cache_expiry_hours,
-                min_value=0, max_value=168, step=1,
-            )
             new_maxpos = st.number_input(
                 "Max Position Warning %", value=current.max_position_warning_pct,
                 min_value=0.01, max_value=1.0, step=0.01, format="%.2f",
@@ -1852,7 +1828,6 @@ if page == "Settings":
             lookback_years=int(new_lookback),
             simulation_paths=int(new_paths),
             simulation_days=int(new_days),
-            cache_expiry_hours=int(new_cache),
             stress_custom_drawdown=new_drawdown,
             report_title=new_title.strip(),
             color_primary=current.color_primary,
@@ -1863,7 +1838,6 @@ if page == "Settings":
         )
         try:
             save_settings(updated, excel_path=_settings_excel)
-            _load_all.clear()
             st.success("Settings saved. Navigate to any page to see changes take effect.")
             st.rerun()
         except PermissionError as e:

@@ -8,8 +8,17 @@ It returns True when the user is authenticated, False otherwise (page stops).
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Ensure project root is on sys.path so `auth.*` imports work regardless
+# of how/where the app is launched.
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import streamlit as st
-from auth.database import init_db
+from auth.database import init_db, is_account_locked, check_and_record_login_attempt
 from auth.auth_manager import login_user, register_user
 
 # ── DCM design tokens (match main app palette) ─────────────────────────────
@@ -91,8 +100,6 @@ def _logo() -> None:
 
 def _render_login() -> None:
     """Login form tab."""
-    from auth.database import is_account_locked, check_and_record_login_attempt
-    
     with st.form("dcm_login_form", clear_on_submit=False):
         identifier = st.text_input(
             "Username or Email",

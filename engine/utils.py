@@ -13,11 +13,10 @@ from typing import Any, Callable, Optional
 # ── Project root ───────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR     = PROJECT_ROOT / "data"
-CACHE_DIR    = DATA_DIR / "cache"
 EXPORTS_DIR  = DATA_DIR / "exports"
 
 # Ensure critical directories exist
-for _d in (DATA_DIR, CACHE_DIR, EXPORTS_DIR):
+for _d in (DATA_DIR, EXPORTS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 
@@ -225,11 +224,6 @@ def get_portfolio_path() -> Path:
     """Return the canonical path to portfolio_holdings.xlsx."""
     return DATA_DIR / "portfolio_holdings.xlsx"
 
-
-def get_cache_path(key: str) -> Path:
-    """Return a cache file path for *key* (a ticker or dataset name)."""
-    safe_key = key.replace("/", "_").replace("^", "X")
-    return CACHE_DIR / f"{safe_key}.pkl"
 
 
 def timestamp_str() -> str:

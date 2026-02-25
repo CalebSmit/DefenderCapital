@@ -89,7 +89,7 @@ portfolio_holdings.xlsx  <--  User edits holdings here (or uploads via dashboard
 engine/data_loader.py    <--  Validates & parses Excel input
         |
         v
-engine/market_data.py    <--  Fetches live prices from Yahoo Finance (cached 24h)
+engine/market_data.py    <--  Fetches live prices from Yahoo Finance
         |
         v
 engine/risk_metrics.py   <--  VaR, CVaR, Sharpe, Beta, drawdown, Euler decomposition
@@ -111,11 +111,10 @@ engine/stress_testing.py <--  4 historical + 5 hypothetical scenarios
 DefenderCapital/
 |-- data/
 |   |-- portfolio_holdings.xlsx    <-- YOUR PORTFOLIO (edit this)
-|   |-- exports/                   <-- Generated reports & audit logs
-|   '-- cache/                     <-- Price data cache (auto-managed)
+|   '-- exports/                   <-- Generated reports & audit logs
 |-- engine/
 |   |-- data_loader.py             <-- Excel parser & validator
-|   |-- market_data.py             <-- yfinance fetcher with caching
+|   |-- market_data.py             <-- yfinance live data fetcher
 |   |-- synthetic_data.py          <-- Synthetic data generator (testing only)
 |   |-- risk_metrics.py            <-- Full risk analytics engine
 |   |-- monte_carlo.py             <-- Monte Carlo simulation
@@ -180,7 +179,6 @@ On the **Settings** sheet of the Excel file:
 | simulation_paths | 10000 | Monte Carlo paths |
 | confidence_level_1 | 0.95 | Primary VaR confidence |
 | confidence_level_2 | 0.99 | Secondary VaR confidence |
-| cache_expiry_hours | 24 | Price cache lifetime |
 
 ### Dashboard Pages
 
@@ -278,7 +276,6 @@ All settings are in the **Settings** sheet of `data/portfolio_holdings.xlsx`. No
 |---|---|
 | `data/portfolio_holdings.xlsx` | Holdings and settings |
 | `.streamlit/config.toml` | Dashboard theme |
-| `data/cache/` | Auto-managed price cache (delete to force re-fetch) |
 | `data/exports/` | Generated reports |
 
 ---

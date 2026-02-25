@@ -1,12 +1,11 @@
 """
-engine/market_data.py — Market data fetcher with caching and auto-population.
+engine/market_data.py — Market data fetcher with auto-population.
 
-Downloads adjusted close prices from yfinance, caches results locally,
+Downloads adjusted close prices from yfinance,
 auto-populates company metadata, and fetches the live risk-free rate.
 """
 from __future__ import annotations
 
-import pickle
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,8 +17,8 @@ import yfinance as yf
 
 from engine.data_loader import Holding, LoadResult, PortfolioSettings
 from engine.utils import (
-    get_logger, get_cache_path, retry, timer,
-    CACHE_DIR, EXPORTS_DIR,
+    get_logger, retry, timer,
+    EXPORTS_DIR,
 )
 
 log = get_logger("defender.market_data")
@@ -215,27 +214,6 @@ def _static_meta_lookup(ticker: str) -> dict:
     return {}
 
 
-# ── Cache helpers ──────────────────────────────────────────────────────────────
-def _cache_valid(path: Path, expiry_hours: int) -> bool:
-    """Return True if a cache file exists and was written within expiry_hours."""
-    if not path.exists():
-        return False
-    age = datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)
-    return age < timedelta(hours=expiry_hours)
-
-
-def _load_cache(path: Path):
-    """Load a pickled object from disk."""
-    with open(path, "rb") as f:
-        return pickle.load(f)
-
-
-def _save_cache(path: Path, obj) -> None:
-    """Pickle an object to disk."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
-        pickle.dump(obj, f)
-
 
 # ── Single-ticker metadata fetch ───────────────────────────────────────────────
 def _fetch_info(ticker: str) -> dict:
@@ -340,12 +318,6 @@ def fetch_risk_free_rate() -> float:
     float
         Annual risk-free rate as a decimal, e.g. 0.045 for 4.5%.
     """
-    cache_path = get_cache_path("risk_free_rate")
-    if _cache_valid(cache_path, expiry_hours=6):
-        rate = _load_cache(cache_path)
-        log.debug(f"Risk-free rate from cache: {rate:.4f}")
-        return rate
-
     try:
         t = yf.Ticker("^TNX")
         info = t.info
@@ -358,7 +330,6 @@ def fetch_risk_free_rate() -> float:
         if rate is None or not (0.001 < rate < 0.30):
             raise ValueError(f"Implausible rate value: {rate}")
         log.info(f"Risk-free rate (^TNX): {rate:.4f} ({rate*100:.2f}%)")
-        _save_cache(cache_path, rate)
         return rate
     except Exception as exc:
         log.warning(f"Could not fetch risk-free rate: {exc}. Using fallback 4.5%.")
@@ -381,7 +352,7 @@ _SECTOR_ETF_TICKERS = {
 }
 
 
-def fetch_sp500_sector_weights(cache_expiry_hours: int = 24) -> Optional[dict[str, float]]:
+def fetch_sp500_sector_weights() -> Optional[dict[str, float]]:
     """
     Compute approximate S&P 500 sector weights from sector SPDR ETF market caps.
 
@@ -390,12 +361,6 @@ def fetch_sp500_sector_weights(cache_expiry_hours: int = 24) -> Optional[dict[st
 
     Returns None on failure (caller should fall back to hardcoded values).
     """
-    cache_path = get_cache_path("sp500_sector_weights")
-    if _cache_valid(cache_path, expiry_hours=cache_expiry_hours):
-        weights = _load_cache(cache_path)
-        log.debug(f"S&P 500 sector weights from cache ({len(weights)} sectors)")
-        return weights
-
     try:
         caps: dict[str, float] = {}
         for etf, sector in _SECTOR_ETF_TICKERS.items():
@@ -409,6 +374,34 @@ def fetch_sp500_sector_weights(cache_expiry_hours: int = 24) -> Optional[dict[st
         if len(caps) < 8:
             raise ValueError(f"Only got market caps for {len(caps)}/11 sector ETFs")
 
+        # Back-fill any missing sectors so they don't silently disappear
+        # (which inflates the weights of the sectors we did get).
+        # Estimate each missing sector's cap from the median of fetched caps,
+        # scaled by its known fallback weight ratio to the median fallback weight.
+        _FALLBACK_WEIGHTS = {
+            "Technology": 0.3147, "Financial Services": 0.1280,
+            "Communication Services": 0.1114, "Consumer Cyclical": 0.1049,
+            "Healthcare": 0.0959, "Industrials": 0.0882,
+            "Consumer Defensive": 0.0611, "Energy": 0.0332,
+            "Utilities": 0.0235, "Basic Materials": 0.0206,
+            "Real Estate": 0.0189,
+        }
+        all_sectors = set(_SECTOR_ETF_TICKERS.values())
+        missing = all_sectors - set(caps.keys())
+        if missing:
+            fetched_caps = sorted(caps.values())
+            median_cap = fetched_caps[len(fetched_caps) // 2]
+            fetched_fb = [_FALLBACK_WEIGHTS.get(s, 0.05) for s in caps]
+            median_fb = sorted(fetched_fb)[len(fetched_fb) // 2]
+            for sector in missing:
+                fb_wt = _FALLBACK_WEIGHTS.get(sector, 0.05)
+                estimated_cap = median_cap * (fb_wt / median_fb) if median_fb > 0 else median_cap
+                caps[sector] = estimated_cap
+                log.warning(
+                    f"Back-filled {sector} with estimated market cap "
+                    f"${estimated_cap/1e9:.1f}B (ETF data unavailable)"
+                )
+
         total = sum(caps.values())
         weights = {sector: mc / total for sector, mc in caps.items()}
 
@@ -416,7 +409,6 @@ def fetch_sp500_sector_weights(cache_expiry_hours: int = 24) -> Optional[dict[st
             f"S&P 500 sector weights from ETF market caps: "
             + ", ".join(f"{s} {w:.1%}" for s, w in sorted(weights.items(), key=lambda x: -x[1]))
         )
-        _save_cache(cache_path, weights)
         return weights
     except Exception as exc:
         log.warning(f"Could not fetch S&P 500 sector weights: {exc}")
@@ -430,11 +422,11 @@ def fetch_market_data(
     settings: Optional[PortfolioSettings] = None,
 ) -> "MarketData":
     """
-    Download and cache all required market data for the portfolio.
+    Download all required market data for the portfolio (always fresh).
 
     1. For each holding: fetch current price, company name, sector, industry.
     2. Fetch historical adjusted close prices for all tickers + benchmark.
-    3. Fetch the risk-free rate (live or cached).
+    3. Fetch the risk-free rate.
 
     Parameters
     ----------
@@ -479,30 +471,11 @@ def fetch_market_data(
     data_quality_log: list[str] = []
     failed_tickers: list[str] = []
 
-    # ── Historical price series (batch download first — needed for current prices too)
-    price_cache_path = get_cache_path("price_history")
-    tickers_key      = "_".join(sorted(all_tickers)) + f"_{start_date}"
-    tickers_key_path = get_cache_path(f"prices_key")
-
-    use_cache = False
-    if _cache_valid(price_cache_path, cfg.cache_expiry_hours):
-        try:
-            cached_key = _load_cache(tickers_key_path)
-            if cached_key == tickers_key:
-                use_cache = True
-        except Exception:
-            pass
-
-    if use_cache:
-        prices_df = _load_cache(price_cache_path)
-        log.info("Price history loaded from cache.")
-    else:
-        t0 = time.perf_counter()
-        prices_df = _batch_fetch_prices(all_tickers, start_date, end_date, data_quality_log, failed_tickers)
-        elapsed = time.perf_counter() - t0
-        log.info(f"Price history fetched in {elapsed:.1f}s for {len(prices_df.columns)} tickers.")
-        _save_cache(price_cache_path, prices_df)
-        _save_cache(tickers_key_path, tickers_key)
+    # ── Historical price series (batch download — needed for current prices too)
+    t0 = time.perf_counter()
+    prices_df = _batch_fetch_prices(all_tickers, start_date, end_date, data_quality_log, failed_tickers)
+    elapsed = time.perf_counter() - t0
+    log.info(f"Price history fetched in {elapsed:.1f}s for {len(prices_df.columns)} tickers.")
 
     # Use last available price from history as current price
     # This is more reliable than yfinance .info/.fast_info in restricted environments
@@ -517,13 +490,8 @@ def fetch_market_data(
     # Try to get company name / sector from yfinance, but use Excel pre-populated
     # values as fallback. Never block on this.
     def _try_fetch_meta(ticker: str) -> dict:
-        cache_path = get_cache_path(f"meta_{ticker}")
-        if _cache_valid(cache_path, cfg.cache_expiry_hours * 24):  # meta cached longer
-            return _load_cache(cache_path)
         try:
-            result = _fetch_info(ticker)
-            _save_cache(cache_path, result)
-            return result
+            return _fetch_info(ticker)
         except Exception:
             return {}
 
@@ -585,8 +553,7 @@ def fetch_market_data(
     else:
         risk_free_rate = fetch_risk_free_rate()
         # HIGH-5 FIX: Check if we're using the hardcoded fallback
-        cache_path = get_cache_path("risk_free_rate")
-        if not _cache_valid(cache_path, expiry_hours=6):
+        if risk_free_rate == 0.045:
             rfr_warning = (
                 f"Risk-free rate fallback used (4.5%). Live ^TNX fetch failed. "
                 f"Sharpe ratio and other RFR-dependent metrics may be slightly off."
