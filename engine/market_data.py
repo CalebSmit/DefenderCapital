@@ -25,6 +25,196 @@ from engine.utils import (
 log = get_logger("defender.market_data")
 
 
+# ── Static ticker metadata fallback ──────────────────────────────────────────
+# When yfinance .info is rate-limited (403) on shared cloud infrastructure
+# (e.g. Streamlit Cloud), we fall back to this table for sector/industry/name.
+# Format: ticker → (shortName, sector, industry)
+_STATIC_META: dict[str, tuple[str, str, str]] = {
+    # ── Technology ────────────────────────────────────────────────────────────
+    "AAPL":  ("Apple Inc.",                         "Technology",             "Consumer Electronics"),
+    "MSFT":  ("Microsoft Corporation",              "Technology",             "Software - Infrastructure"),
+    "GOOG":  ("Alphabet Inc.",                      "Communication Services", "Internet Content & Information"),
+    "GOOGL": ("Alphabet Inc.",                      "Communication Services", "Internet Content & Information"),
+    "AMZN":  ("Amazon.com, Inc.",                   "Consumer Cyclical",      "Internet Retail"),
+    "META":  ("Meta Platforms, Inc.",               "Communication Services", "Internet Content & Information"),
+    "NVDA":  ("NVIDIA Corporation",                 "Technology",             "Semiconductors"),
+    "AMD":   ("Advanced Micro Devices, Inc.",       "Technology",             "Semiconductors"),
+    "TSM":   ("Taiwan Semiconductor Mfg.",          "Technology",             "Semiconductors"),
+    "QCOM":  ("QUALCOMM Incorporated",             "Technology",             "Semiconductors"),
+    "CSCO":  ("Cisco Systems, Inc.",                "Technology",             "Communication Equipment"),
+    "ADBE":  ("Adobe Inc.",                         "Technology",             "Software - Infrastructure"),
+    "PYPL":  ("PayPal Holdings, Inc.",              "Financial Services",     "Credit Services"),
+    "INTC":  ("Intel Corporation",                  "Technology",             "Semiconductors"),
+    "ORCL":  ("Oracle Corporation",                 "Technology",             "Software - Infrastructure"),
+    "CRM":   ("Salesforce, Inc.",                   "Technology",             "Software - Application"),
+    "AVGO":  ("Broadcom Inc.",                      "Technology",             "Semiconductors"),
+    "TXN":   ("Texas Instruments Incorporated",     "Technology",             "Semiconductors"),
+    "NOW":   ("ServiceNow, Inc.",                   "Technology",             "Software - Application"),
+    "IBM":   ("International Business Machines",    "Technology",             "Information Technology Services"),
+    "SHOP":  ("Shopify Inc.",                       "Technology",             "Software - Application"),
+    "SQ":    ("Block, Inc.",                        "Technology",             "Software - Infrastructure"),
+    "SNOW":  ("Snowflake Inc.",                     "Technology",             "Software - Application"),
+    "PLTR":  ("Palantir Technologies Inc.",         "Technology",             "Software - Infrastructure"),
+    "NET":   ("Cloudflare, Inc.",                   "Technology",             "Software - Infrastructure"),
+    "MU":    ("Micron Technology, Inc.",            "Technology",             "Semiconductors"),
+    "AMAT":  ("Applied Materials, Inc.",            "Technology",             "Semiconductor Equipment"),
+    "LRCX":  ("Lam Research Corporation",           "Technology",             "Semiconductor Equipment"),
+    "KLAC":  ("KLA Corporation",                    "Technology",             "Semiconductor Equipment"),
+    "MRVL":  ("Marvell Technology, Inc.",           "Technology",             "Semiconductors"),
+    "PANW":  ("Palo Alto Networks, Inc.",           "Technology",             "Software - Infrastructure"),
+    "CRWD":  ("CrowdStrike Holdings, Inc.",         "Technology",             "Software - Infrastructure"),
+    "ZS":    ("Zscaler, Inc.",                      "Technology",             "Software - Infrastructure"),
+
+    # ── Financial Services ────────────────────────────────────────────────────
+    "BLK":   ("BlackRock, Inc.",                    "Financial Services",     "Asset Management"),
+    "MA":    ("Mastercard Incorporated",            "Financial Services",     "Credit Services"),
+    "V":     ("Visa Inc.",                          "Financial Services",     "Credit Services"),
+    "WFC":   ("Wells Fargo & Company",              "Financial Services",     "Banks - Diversified"),
+    "USB":   ("U.S. Bancorp",                       "Financial Services",     "Banks - Regional"),
+    "JPM":   ("JPMorgan Chase & Co.",               "Financial Services",     "Banks - Diversified"),
+    "BAC":   ("Bank of America Corporation",        "Financial Services",     "Banks - Diversified"),
+    "GS":    ("The Goldman Sachs Group, Inc.",      "Financial Services",     "Capital Markets"),
+    "MS":    ("Morgan Stanley",                     "Financial Services",     "Capital Markets"),
+    "C":     ("Citigroup Inc.",                     "Financial Services",     "Banks - Diversified"),
+    "SCHW":  ("The Charles Schwab Corporation",     "Financial Services",     "Capital Markets"),
+    "AXP":   ("American Express Company",           "Financial Services",     "Credit Services"),
+    "SPGI":  ("S&P Global Inc.",                    "Financial Services",     "Financial Data & Stock Exchanges"),
+    "CME":   ("CME Group Inc.",                     "Financial Services",     "Financial Data & Stock Exchanges"),
+    "ICE":   ("Intercontinental Exchange, Inc.",     "Financial Services",     "Financial Data & Stock Exchanges"),
+    "BRK-B": ("Berkshire Hathaway Inc.",            "Financial Services",     "Insurance - Diversified"),
+    "CBRE":  ("CBRE Group, Inc.",                   "Real Estate",           "Real Estate Services"),
+
+    # ── Healthcare ────────────────────────────────────────────────────────────
+    "PFE":   ("Pfizer Inc.",                        "Healthcare",            "Drug Manufacturers - General"),
+    "SYK":   ("Stryker Corporation",                "Healthcare",            "Medical Devices"),
+    "ELV":   ("Elevance Health, Inc.",              "Healthcare",            "Healthcare Plans"),
+    "JNJ":   ("Johnson & Johnson",                  "Healthcare",            "Drug Manufacturers - General"),
+    "UNH":   ("UnitedHealth Group Incorporated",    "Healthcare",            "Healthcare Plans"),
+    "LLY":   ("Eli Lilly and Company",              "Healthcare",            "Drug Manufacturers - General"),
+    "ABBV":  ("AbbVie Inc.",                        "Healthcare",            "Drug Manufacturers - General"),
+    "MRK":   ("Merck & Co., Inc.",                  "Healthcare",            "Drug Manufacturers - General"),
+    "TMO":   ("Thermo Fisher Scientific Inc.",      "Healthcare",            "Diagnostics & Research"),
+    "ABT":   ("Abbott Laboratories",                "Healthcare",            "Medical Devices"),
+    "DHR":   ("Danaher Corporation",                "Healthcare",            "Diagnostics & Research"),
+    "BMY":   ("Bristol-Myers Squibb Company",       "Healthcare",            "Drug Manufacturers - General"),
+    "AMGN":  ("Amgen Inc.",                         "Healthcare",            "Drug Manufacturers - General"),
+    "GILD":  ("Gilead Sciences, Inc.",              "Healthcare",            "Drug Manufacturers - General"),
+    "ISRG":  ("Intuitive Surgical, Inc.",           "Healthcare",            "Medical Instruments"),
+    "VRTX":  ("Vertex Pharmaceuticals Incorporated","Healthcare",            "Biotechnology"),
+    "MDT":   ("Medtronic plc",                      "Healthcare",            "Medical Devices"),
+
+    # ── Consumer Cyclical ─────────────────────────────────────────────────────
+    "DIS":   ("The Walt Disney Company",            "Communication Services", "Entertainment"),
+    "NKE":   ("NIKE, Inc.",                         "Consumer Cyclical",      "Footwear & Accessories"),
+    "CROX":  ("Crocs, Inc.",                        "Consumer Cyclical",      "Footwear & Accessories"),
+    "TSLA":  ("Tesla, Inc.",                        "Consumer Cyclical",      "Auto Manufacturers"),
+    "HD":    ("The Home Depot, Inc.",               "Consumer Cyclical",      "Home Improvement Retail"),
+    "LOW":   ("Lowe's Companies, Inc.",             "Consumer Cyclical",      "Home Improvement Retail"),
+    "MCD":   ("McDonald's Corporation",             "Consumer Cyclical",      "Restaurants"),
+    "SBUX":  ("Starbucks Corporation",              "Consumer Cyclical",      "Restaurants"),
+    "TJX":   ("The TJX Companies, Inc.",            "Consumer Cyclical",      "Apparel Retail"),
+    "BKNG":  ("Booking Holdings Inc.",              "Consumer Cyclical",      "Travel Services"),
+    "ABNB":  ("Airbnb, Inc.",                       "Consumer Cyclical",      "Travel Services"),
+    "LULU":  ("Lululemon Athletica Inc.",           "Consumer Cyclical",      "Apparel Retail"),
+    "GM":    ("General Motors Company",             "Consumer Cyclical",      "Auto Manufacturers"),
+    "F":     ("Ford Motor Company",                 "Consumer Cyclical",      "Auto Manufacturers"),
+    "CMG":   ("Chipotle Mexican Grill, Inc.",       "Consumer Cyclical",      "Restaurants"),
+
+    # ── Consumer Defensive ────────────────────────────────────────────────────
+    "DG":    ("Dollar General Corporation",         "Consumer Defensive",     "Discount Stores"),
+    "PG":    ("The Procter & Gamble Company",       "Consumer Defensive",     "Household & Personal Products"),
+    "KO":    ("The Coca-Cola Company",              "Consumer Defensive",     "Beverages - Non-Alcoholic"),
+    "PEP":   ("PepsiCo, Inc.",                      "Consumer Defensive",     "Beverages - Non-Alcoholic"),
+    "WMT":   ("Walmart Inc.",                       "Consumer Defensive",     "Discount Stores"),
+    "COST":  ("Costco Wholesale Corporation",       "Consumer Defensive",     "Discount Stores"),
+    "PM":    ("Philip Morris International Inc.",    "Consumer Defensive",     "Tobacco"),
+    "MO":    ("Altria Group, Inc.",                  "Consumer Defensive",     "Tobacco"),
+    "CL":    ("Colgate-Palmolive Company",          "Consumer Defensive",     "Household & Personal Products"),
+    "MDLZ":  ("Mondelez International, Inc.",       "Consumer Defensive",     "Confectioners"),
+
+    # ── Industrials ───────────────────────────────────────────────────────────
+    "RTX":   ("RTX Corporation",                    "Industrials",            "Aerospace & Defense"),
+    "DE":    ("Deere & Company",                    "Industrials",            "Farm & Heavy Construction Machinery"),
+    "CARR":  ("Carrier Global Corporation",         "Industrials",            "Building Products & Equipment"),
+    "BA":    ("The Boeing Company",                 "Industrials",            "Aerospace & Defense"),
+    "CAT":   ("Caterpillar Inc.",                   "Industrials",            "Farm & Heavy Construction Machinery"),
+    "HON":   ("Honeywell International Inc.",       "Industrials",            "Conglomerates"),
+    "UPS":   ("United Parcel Service, Inc.",        "Industrials",            "Integrated Freight & Logistics"),
+    "GE":    ("GE Aerospace",                       "Industrials",            "Aerospace & Defense"),
+    "LMT":   ("Lockheed Martin Corporation",        "Industrials",            "Aerospace & Defense"),
+    "UNP":   ("Union Pacific Corporation",          "Industrials",            "Railroads"),
+    "WM":    ("Waste Management, Inc.",             "Industrials",            "Waste Management"),
+    "ETN":   ("Eaton Corporation plc",              "Industrials",            "Electrical Equipment"),
+    "MMM":   ("3M Company",                         "Industrials",            "Conglomerates"),
+
+    # ── Energy ────────────────────────────────────────────────────────────────
+    "CVX":   ("Chevron Corporation",                "Energy",                 "Oil & Gas Integrated"),
+    "XOM":   ("Exxon Mobil Corporation",            "Energy",                 "Oil & Gas Integrated"),
+    "COP":   ("ConocoPhillips",                     "Energy",                 "Oil & Gas E&P"),
+    "SLB":   ("Schlumberger Limited",               "Energy",                 "Oil & Gas Equipment & Services"),
+    "EOG":   ("EOG Resources, Inc.",                "Energy",                 "Oil & Gas E&P"),
+    "MPC":   ("Marathon Petroleum Corporation",     "Energy",                 "Oil & Gas Refining & Marketing"),
+    "PSX":   ("Phillips 66",                        "Energy",                 "Oil & Gas Refining & Marketing"),
+    "OXY":   ("Occidental Petroleum Corporation",   "Energy",                 "Oil & Gas E&P"),
+    "SMR":   ("NuScale Power Corporation",          "Energy",                 "Specialty Industrial Machinery"),
+
+    # ── Communication Services ────────────────────────────────────────────────
+    "T":     ("AT&T Inc.",                          "Communication Services", "Telecom Services"),
+    "VZ":    ("Verizon Communications Inc.",         "Communication Services", "Telecom Services"),
+    "TMUS":  ("T-Mobile US, Inc.",                  "Communication Services", "Telecom Services"),
+    "NFLX":  ("Netflix, Inc.",                      "Communication Services", "Entertainment"),
+    "CMCSA": ("Comcast Corporation",                "Communication Services", "Telecom Services"),
+    "ATVI":  ("Activision Blizzard, Inc.",          "Communication Services", "Electronic Gaming & Multimedia"),
+
+    # ── Utilities ─────────────────────────────────────────────────────────────
+    "EXC":   ("Exelon Corporation",                 "Utilities",              "Utilities - Regulated Electric"),
+    "NEE":   ("NextEra Energy, Inc.",               "Utilities",              "Utilities - Regulated Electric"),
+    "DUK":   ("Duke Energy Corporation",            "Utilities",              "Utilities - Regulated Electric"),
+    "SO":    ("The Southern Company",               "Utilities",              "Utilities - Regulated Electric"),
+    "D":     ("Dominion Energy, Inc.",              "Utilities",              "Utilities - Regulated Electric"),
+    "AEP":   ("American Electric Power Company",    "Utilities",              "Utilities - Regulated Electric"),
+
+    # ── Real Estate ───────────────────────────────────────────────────────────
+    "DLR":   ("Digital Realty Trust, Inc.",          "Real Estate",            "REIT - Specialty"),
+    "AMT":   ("American Tower Corporation",         "Real Estate",            "REIT - Specialty"),
+    "PLD":   ("Prologis, Inc.",                     "Real Estate",            "REIT - Industrial"),
+    "CCI":   ("Crown Castle Inc.",                  "Real Estate",            "REIT - Specialty"),
+    "EQIX":  ("Equinix, Inc.",                      "Real Estate",            "REIT - Specialty"),
+    "SPG":   ("Simon Property Group, Inc.",         "Real Estate",            "REIT - Retail"),
+    "O":     ("Realty Income Corporation",          "Real Estate",            "REIT - Retail"),
+
+    # ── Basic Materials ───────────────────────────────────────────────────────
+    "RIO":   ("Rio Tinto Group",                    "Basic Materials",        "Other Industrial Metals & Mining"),
+    "LIN":   ("Linde plc",                          "Basic Materials",        "Specialty Chemicals"),
+    "APD":   ("Air Products and Chemicals, Inc.",   "Basic Materials",        "Specialty Chemicals"),
+    "NEM":   ("Newmont Corporation",                "Basic Materials",        "Gold"),
+    "FCX":   ("Freeport-McMoRan Inc.",              "Basic Materials",        "Copper"),
+    "SHW":   ("The Sherwin-Williams Company",       "Basic Materials",        "Specialty Chemicals"),
+    "ECL":   ("Ecolab Inc.",                        "Basic Materials",        "Specialty Chemicals"),
+    "DD":    ("DuPont de Nemours, Inc.",            "Basic Materials",        "Specialty Chemicals"),
+    "BHP":   ("BHP Group Limited",                  "Basic Materials",        "Other Industrial Metals & Mining"),
+    "VALE":  ("Vale S.A.",                          "Basic Materials",        "Other Industrial Metals & Mining"),
+
+    # ── Other / Specialty ─────────────────────────────────────────────────────
+    "LTH":   ("Life Time Group Holdings, Inc.",     "Consumer Cyclical",      "Leisure"),
+
+    # ── Popular ETFs (for benchmark / reference) ──────────────────────────────
+    "SPY":   ("SPDR S&P 500 ETF Trust",             "ETF",                    "Large Blend"),
+    "QQQ":   ("Invesco QQQ Trust",                  "ETF",                    "Large Growth"),
+    "IWM":   ("iShares Russell 2000 ETF",           "ETF",                    "Small Blend"),
+    "VTI":   ("Vanguard Total Stock Market ETF",    "ETF",                    "Large Blend"),
+    "DIA":   ("SPDR Dow Jones Industrial Avg ETF",  "ETF",                    "Large Value"),
+}
+
+
+def _static_meta_lookup(ticker: str) -> dict:
+    """Return a metadata dict from the static fallback table, or empty dict."""
+    entry = _STATIC_META.get(ticker.upper())
+    if entry:
+        return {"shortName": entry[0], "sector": entry[1], "industry": entry[2]}
+    return {}
+
+
 # ── Cache helpers ──────────────────────────────────────────────────────────────
 def _cache_valid(path: Path, expiry_hours: int) -> bool:
     """Return True if a cache file exists and was written within expiry_hours."""
@@ -340,14 +530,16 @@ def fetch_market_data(
         # Current price: prefer live (from history), fall back to stored value
         h.current_price = latest_prices.get(h.ticker, h.current_price)
 
-        # Metadata: prefer yfinance, fall back to Excel pre-populated values
+        # Metadata: prefer yfinance, then static fallback, then Excel values
         meta = meta_map.get(h.ticker, {})
+        static = _static_meta_lookup(h.ticker)
         if not h.company_name or h.company_name in ("nan", ""):
-            h.company_name = meta.get("shortName", meta.get("longName", h.ticker))
+            h.company_name = (meta.get("shortName") or meta.get("longName")
+                              or static.get("shortName") or h.ticker)
         if not h.sector or h.sector in ("nan", ""):
-            h.sector = meta.get("sector", "Unknown")
+            h.sector = meta.get("sector") or static.get("sector", "Unknown")
         if not h.industry or h.industry in ("nan", ""):
-            h.industry = meta.get("industry", "Unknown")
+            h.industry = meta.get("industry") or static.get("industry", "Unknown")
 
         # Recalculate derived fields
         h.market_value   = h.shares_held * h.current_price
