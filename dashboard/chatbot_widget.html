@@ -1,0 +1,1134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DCM Chat Widget</title>
+  <script>window.__PORTFOLIO_DATA__ = {};</script>
+</head>
+<body style="margin:0;padding:0;background:transparent;overflow:hidden;">
+<script>
+(function () {
+  'use strict';
+
+  const WIDGET_ID     = 'dcm-chat-root';
+  const STYLES_ID     = 'dcm-chat-styles';
+  const FONTS_ID      = 'dcm-chat-fonts';
+  const DATA_KEY      = '__dcmPortfolioData';
+  const STORAGE_API   = 'dcm_openai_key';
+  const STORAGE_SIZE  = 'dcm_chat_size';
+  const STORAGE_MODEL = 'dcm_chat_model';
+  const MAX_HISTORY   = 20;
+  const DEFAULT_W     = 400;
+  const DEFAULT_H     = 520;
+
+  let p;
+  try { p = window.parent; if (!p || p === window) return; } catch (e) { return; }
+
+  p[DATA_KEY] = window.__PORTFOLIO_DATA__ || {};
+
+  if (p.document.getElementById(WIDGET_ID)) {
+    p[DATA_KEY] = window.__PORTFOLIO_DATA__ || {};
+    return;
+  }
+
+  if (!p.document.getElementById(FONTS_ID)) {
+    const lnk = p.document.createElement('link');
+    lnk.id   = FONTS_ID;
+    lnk.rel  = 'stylesheet';
+    lnk.href = 'https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap';
+    p.document.head.appendChild(lnk);
+  }
+
+  /* ── DCM Gold palette ── */
+  const GOLD      = '#c9a84c';
+  const GOLD_LT   = '#e0c97a';
+  const GOLD_DIM  = 'rgba(201,168,76,';
+
+  const CSS = `
+    #dcm-chat-root, #dcm-chat-root * {
+      box-sizing: border-box; margin: 0; padding: 0;
+      font-family: 'DM Sans', system-ui, sans-serif;
+    }
+    #dcm-chat-root {
+      --bg-deep:       #0c0f14;
+      --bg-primary:    #0f1318;
+      --bg-card:       #171c24;
+      --bg-elevated:   #1e242f;
+      --border:        rgba(255,255,255,.06);
+      --border-bright: rgba(255,255,255,.10);
+      --text-primary:  #e8e2d6;
+      --text-secondary:#8a8070;
+      --text-muted:    #504840;
+      --accent:        #c9a84c;
+      --accent-lt:     #e0c97a;
+      --accent-dim:    rgba(201,168,76,.08);
+      --accent-glow:   rgba(201,168,76,.22);
+      --green:         #4caf7d;
+      --red:           #e05c52;
+      position: fixed; bottom: 24px; right: 24px;
+      z-index: 2000; pointer-events: none;
+    }
+
+    /* ── FAB ── */
+    #dcm-fab {
+      position: fixed; bottom: 24px; right: 24px;
+      width: 52px; height: 52px; border-radius: 50%;
+      background: linear-gradient(135deg, ${GOLD}, ${GOLD_LT});
+      color: #0f0c04; border: none; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 2000; pointer-events: all;
+      box-shadow: 0 4px 20px ${GOLD_DIM}.28);
+      animation: dcmFabPulse 3.5s ease-in-out infinite;
+      transition: transform .18s ease, box-shadow .18s ease;
+    }
+    #dcm-fab:hover {
+      transform: scale(1.08);
+      box-shadow: 0 6px 28px ${GOLD_DIM}.48);
+    }
+    #dcm-fab.open {
+      animation: none;
+      box-shadow: 0 4px 20px ${GOLD_DIM}.22);
+    }
+    #dcm-fab .dcm-fab-bubble { display: flex; }
+    #dcm-fab .dcm-fab-x      { display: none; }
+    #dcm-fab.open .dcm-fab-bubble { display: none; }
+    #dcm-fab.open .dcm-fab-x      { display: flex; }
+    @keyframes dcmFabPulse {
+      0%,100% { box-shadow: 0 4px 20px ${GOLD_DIM}.22); }
+      50%     { box-shadow: 0 6px 30px ${GOLD_DIM}.44); }
+    }
+
+    /* ── Panel ── */
+    #dcm-panel {
+      position: fixed; bottom: 88px; right: 24px;
+      width: ${DEFAULT_W}px; height: ${DEFAULT_H}px;
+      min-width: 320px; min-height: 300px;
+      max-width: 90vw; max-height: 85vh;
+      background: var(--bg-primary);
+      border: 1px solid rgba(201,168,76,.18);
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(201,168,76,.06);
+      z-index: 1999; display: none; flex-direction: column;
+      overflow: hidden; pointer-events: all;
+      transform-origin: bottom right;
+    }
+    #dcm-panel.open {
+      display: flex;
+      animation: dcmPanelIn .22s cubic-bezier(.22,.68,0,1.2) both;
+    }
+    @keyframes dcmPanelIn {
+      from { transform: scale(.92) translateY(24px); opacity: 0; }
+      to   { transform: scale(1)   translateY(0);    opacity: 1; }
+    }
+
+    /* ── Resize handle ── */
+    #dcm-resize {
+      position: absolute; top: 0; left: 0;
+      width: 20px; height: 20px;
+      cursor: nwse-resize; z-index: 20;
+    }
+    #dcm-resize::before {
+      content: ''; position: absolute;
+      top: 5px; left: 5px;
+      width: 8px; height: 8px;
+      border-left: 2px solid var(--accent);
+      border-top:  2px solid var(--accent);
+      border-radius: 1px; opacity: .25;
+      transition: opacity .15s;
+    }
+    #dcm-resize:hover::before { opacity: .8; }
+
+    /* ── Header ── */
+    #dcm-header {
+      flex-shrink: 0; padding: 11px 14px 11px 16px;
+      background: linear-gradient(160deg, #181c23, #1e2530);
+      border-bottom: 1px solid rgba(201,168,76,.12);
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px;
+    }
+    #dcm-header-left  { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    #dcm-header-right { display: flex; align-items: center; gap: 1px; flex-shrink: 0; }
+    #dcm-status-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 6px rgba(76,175,125,.6);
+      flex-shrink: 0;
+    }
+    #dcm-title {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 14px; font-weight: 600;
+      color: var(--text-primary); letter-spacing: .01em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #dcm-model-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; color: var(--text-muted);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      border-radius: 10px; padding: 2px 8px;
+      cursor: pointer; white-space: nowrap;
+      transition: color .15s, border-color .15s;
+      flex-shrink: 0;
+    }
+    #dcm-model-badge:hover {
+      color: var(--accent);
+      border-color: rgba(201,168,76,.3);
+    }
+    #dcm-model-sel-hidden {
+      position: absolute; opacity: 0; pointer-events: none; width: 0; height: 0;
+    }
+    .dcm-hdr-btn {
+      background: none; border: 1px solid transparent;
+      color: var(--text-secondary);
+      padding: 5px; border-radius: 7px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .dcm-hdr-btn:hover {
+      background: var(--bg-elevated);
+      border-color: var(--border-bright);
+      color: var(--accent);
+    }
+
+    /* ── Message list ── */
+    #dcm-msgs {
+      flex: 1; overflow-y: auto; overflow-x: hidden;
+      padding: 18px 18px 12px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    #dcm-msgs::-webkit-scrollbar { width: 4px; }
+    #dcm-msgs::-webkit-scrollbar-track { background: transparent; }
+    #dcm-msgs::-webkit-scrollbar-thumb {
+      background: rgba(201,168,76,.15); border-radius: 2px;
+    }
+    #dcm-msgs::-webkit-scrollbar-thumb:hover {
+      background: rgba(201,168,76,.3);
+    }
+
+    /* ── Welcome state ── */
+    .dcm-welcome {
+      align-self: center; text-align: center;
+      padding: 32px 20px; max-width: 270px;
+    }
+    .dcm-welcome-title {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 15px; font-weight: 600;
+      color: var(--text-primary); margin-bottom: 8px;
+    }
+    .dcm-welcome-sub {
+      font-size: 12.5px; color: var(--text-secondary); line-height: 1.6;
+    }
+    /* ── Data-freshness banner ── */
+    #dcm-data-bar {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 14px;
+      background: rgba(201,168,76,.06);
+      border-bottom: 1px solid rgba(201,168,76,.10);
+      font-size: 10.5px; color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: .02em;
+      flex-shrink: 0;
+    }
+    #dcm-data-bar .dcm-db-dot {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: var(--accent); flex-shrink: 0;
+      animation: dcmDbPulse 2.5s ease-in-out infinite;
+    }
+    @keyframes dcmDbPulse {
+      0%,100% { opacity: .4; }
+      50%     { opacity: 1; }
+    }
+    #dcm-data-bar span { color: var(--accent); font-weight: 600; }
+
+    /* ── Message bubbles ── */
+    .dcm-msg-user {
+      align-self: flex-end;
+      width: fit-content; max-width: 82%;
+      background: linear-gradient(135deg, ${GOLD}, ${GOLD_LT});
+      color: #0f0c04; font-weight: 500;
+      padding: 11px 18px;
+      border-radius: 16px; border-bottom-right-radius: 4px;
+      font-size: 13.5px; line-height: 1.6;
+      word-break: break-word; overflow-wrap: break-word;
+      animation: dcmMsgIn .18s ease both;
+    }
+    /* AI response — no bubble, just clean text flowing in the feed */
+    .dcm-msg-ai {
+      align-self: flex-start;
+      width: 100%;
+      color: var(--text-primary);
+      padding: 2px 4px 10px;
+      font-size: 13.5px; line-height: 1.7;
+      word-break: break-word; overflow-wrap: break-word;
+      animation: dcmMsgIn .18s ease both;
+    }
+    /* thin gold left rule to visually anchor AI responses without a box */
+    .dcm-msg-ai::before {
+      content: '';
+      display: block;
+      width: 2px; height: 100%;
+      position: absolute; left: 0; top: 0;
+    }
+    .dcm-msg-error {
+      align-self: center;
+      background: rgba(224,92,82,.12);
+      border: 1px solid rgba(224,92,82,.22);
+      color: var(--red); font-size: 12px; text-align: center;
+      padding: 10px 18px; border-radius: 10px;
+      max-width: 92%;
+      word-break: break-word; overflow-wrap: break-word;
+    }
+    @keyframes dcmMsgIn {
+      from { transform: translateY(5px); opacity: 0; }
+      to   { transform: translateY(0);   opacity: 1; }
+    }
+
+    /* ── AI message rich content ── */
+    .dcm-msg-ai strong {
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .dcm-msg-ai em {
+      font-style: italic;
+      color: var(--text-secondary);
+    }
+    .dcm-msg-ai code {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      background: rgba(0,0,0,.28); color: var(--accent-lt);
+      padding: 1px 5px; border-radius: 4px;
+      border: 1px solid rgba(201,168,76,.18);
+    }
+    .dcm-msg-ai pre {
+      background: rgba(0,0,0,.3); border: 1px solid rgba(201,168,76,.12);
+      border-radius: 8px; padding: 10px 12px;
+      overflow-x: auto; margin: 6px 0;
+      font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
+      color: var(--text-primary); line-height: 1.5;
+      max-width: 100%;
+    }
+    .dcm-msg-ai pre code { background: none; border: none; padding: 0; color: inherit; }
+    /* ── List items rendered as flex rows (no grouping needed) ── */
+    .dcm-li-item, .dcm-ol-item {
+      display: flex; align-items: baseline;
+      gap: 7px; margin: 3px 0; line-height: 1.55;
+      font-family: 'DM Sans', sans-serif;
+    }
+    .dcm-li-dot {
+      color: var(--accent); flex-shrink: 0;
+      font-size: 15px; line-height: 1; margin-top: 1px;
+    }
+    .dcm-ol-num {
+      color: var(--accent); font-weight: 700;
+      flex-shrink: 0; min-width: 18px;
+      font-size: 13px;
+    }
+    .dcm-li-item + .dcm-li-item,
+    .dcm-ol-item + .dcm-ol-item { margin-top: 5px; }
+    /* Section headings inside AI messages */
+    .dcm-msg-ai h3 {
+      font-family: 'DM Sans', sans-serif;
+      font-size: 13px; font-weight: 700;
+      color: var(--text-primary);
+      margin: 10px 0 5px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid rgba(201,168,76,.15);
+    }
+    .dcm-msg-ai p { margin-bottom: 7px; }
+    .dcm-msg-ai p:last-child { margin-bottom: 0; }
+    /* subtle separator after each AI response */
+    .dcm-msg-ai + .dcm-msg-user {
+      margin-top: 4px;
+      padding-top: 18px;
+      border-top: 1px solid rgba(255,255,255,.04);
+    }
+
+    /* ── Typing indicator ── */
+    #dcm-typing {
+      align-self: flex-start;
+      background: var(--bg-card);
+      border: 1px solid rgba(201,168,76,.10);
+      border-radius: 14px; border-bottom-left-radius: 4px;
+      padding: 10px 14px;
+      display: none; gap: 5px; align-items: center;
+    }
+    #dcm-typing.show { display: flex; }
+    .dcm-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent);
+      opacity: .35;
+      animation: dcmDotBlink 1.3s ease-in-out infinite;
+    }
+    .dcm-dot:nth-child(2) { animation-delay: .22s; }
+    .dcm-dot:nth-child(3) { animation-delay: .44s; }
+    @keyframes dcmDotBlink {
+      0%,80%,100% { opacity: .3; transform: scale(.8); }
+      40%         { opacity: 1;  transform: scale(1.1); }
+    }
+
+    /* ── Input area ── */
+    #dcm-input-area {
+      flex-shrink: 0; padding: 10px 16px 14px;
+      border-top: 1px solid rgba(201,168,76,.10);
+      background: var(--bg-card);
+    }
+
+    /* ── Suggestion chips ── */
+    #dcm-chips {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+    }
+    #dcm-chips.hide { display: none; }
+    .dcm-chip {
+      font-size: 11px; padding: 4px 11px; border-radius: 20px;
+      background: var(--bg-elevated);
+      border: 1px solid rgba(201,168,76,.18);
+      color: var(--text-secondary); cursor: pointer;
+      white-space: nowrap;
+      font-family: 'DM Sans', sans-serif; font-weight: 500;
+      transition: color .15s, border-color .2s, background .15s, transform .1s;
+    }
+    .dcm-chip:hover {
+      color: var(--accent);
+      border-color: rgba(201,168,76,.5);
+      background: var(--accent-dim);
+      transform: translateY(-1px);
+    }
+
+    /* ── Input row ── */
+    #dcm-input-row { display: flex; gap: 8px; align-items: flex-end; }
+    #dcm-textarea {
+      flex: 1;
+      background: var(--bg-elevated);
+      border: 1px solid rgba(201,168,76,.15);
+      border-radius: 10px;
+      padding: 9px 16px;
+      font-size: 13px; font-family: 'DM Sans', sans-serif;
+      color: var(--text-primary);
+      resize: none; outline: none;
+      min-height: 38px; max-height: 90px;
+      overflow-y: auto; line-height: 1.5;
+      transition: border-color .18s, box-shadow .18s;
+    }
+    #dcm-textarea::placeholder { color: var(--text-muted); }
+    #dcm-textarea:focus {
+      border-color: rgba(201,168,76,.45);
+      box-shadow: 0 0 0 3px rgba(201,168,76,.08);
+    }
+    #dcm-textarea::-webkit-scrollbar { width: 3px; }
+    #dcm-textarea::-webkit-scrollbar-thumb {
+      background: rgba(201,168,76,.2); border-radius: 2px;
+    }
+
+    /* ── Stop button ── */
+    #dcm-stop {
+      width: 36px; height: 36px; flex-shrink: 0; border-radius: 10px;
+      background: rgba(224,92,82,.12);
+      border: 1px solid rgba(224,92,82,.22);
+      color: var(--red); cursor: pointer;
+      display: none; align-items: center; justify-content: center;
+      transition: background .15s;
+    }
+    #dcm-stop.show { display: flex; }
+    #dcm-stop:hover { background: rgba(224,92,82,.25); }
+
+    /* ── Send button ── */
+    #dcm-send {
+      width: 36px; height: 36px; flex-shrink: 0; border-radius: 10px;
+      background: linear-gradient(135deg, ${GOLD}, ${GOLD_LT});
+      color: #0f0c04; border: none; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      opacity: .35;
+      transition: opacity .18s, transform .15s, box-shadow .18s;
+    }
+    #dcm-send.active {
+      opacity: 1;
+      box-shadow: 0 2px 10px ${GOLD_DIM}.3);
+    }
+    #dcm-send:hover:not(:disabled) { transform: scale(1.07); }
+    #dcm-send:active:not(:disabled) { transform: scale(.93); }
+    #dcm-send:disabled { opacity: .15; cursor: not-allowed; }
+
+    /* ── Settings overlay ── */
+    #dcm-settings {
+      position: absolute; inset: 0;
+      background: rgba(9,11,16,.88);
+      backdrop-filter: blur(6px);
+      border-radius: 16px; z-index: 10;
+      display: none; align-items: center; justify-content: center;
+      padding: 20px;
+    }
+    #dcm-settings.open { display: flex; }
+    #dcm-settings-box {
+      background: var(--bg-card);
+      border: 1px solid rgba(201,168,76,.18);
+      border-radius: 13px; padding: 22px; width: 100%;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    #dcm-settings-box h3 {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 16px; font-weight: 600; color: var(--text-primary);
+    }
+    .dcm-field { display: flex; flex-direction: column; gap: 6px; }
+    .dcm-s-label {
+      font-family: 'DM Sans', sans-serif;
+      font-size: 11px; font-weight: 600; letter-spacing: .07em;
+      text-transform: uppercase; color: var(--accent);
+    }
+    .dcm-s-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.55; }
+    .dcm-s-input {
+      font-family: 'JetBrains Mono', monospace; font-size: 13px;
+      background: var(--bg-elevated); color: var(--text-primary);
+      border: 1px solid var(--border-bright); border-radius: 8px;
+      padding: 9px 12px; outline: none; width: 100%;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .dcm-s-input:focus {
+      border-color: rgba(201,168,76,.45);
+      box-shadow: 0 0 0 3px rgba(201,168,76,.08);
+    }
+    .dcm-s-select {
+      font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      background: var(--bg-elevated); color: var(--text-primary);
+      border: 1px solid var(--border-bright); border-radius: 8px;
+      padding: 9px 12px; outline: none; width: 100%;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8070' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center;
+      cursor: pointer; transition: border-color .15s, box-shadow .15s;
+    }
+    .dcm-s-select:focus {
+      border-color: rgba(201,168,76,.45);
+      box-shadow: 0 0 0 3px rgba(201,168,76,.08);
+    }
+    .dcm-s-select option { background: #1e242f; }
+    .dcm-key-status { font-size: 11px; font-weight: 600; min-height: 14px; }
+    .dcm-key-ok      { color: var(--green); }
+    .dcm-key-err     { color: var(--red); }
+    .dcm-key-pending { color: var(--accent); }
+    .dcm-s-btns { display: flex; gap: 8px; }
+    .dcm-s-btn {
+      flex: 1; padding: 9px 14px; border-radius: 8px; border: none;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      font-family: 'DM Sans', sans-serif; transition: all .15s;
+    }
+    .dcm-s-btn:active { transform: scale(.97); }
+    .dcm-s-btn-primary {
+      background: linear-gradient(135deg, ${GOLD}, ${GOLD_LT});
+      color: #0f0c04;
+    }
+    .dcm-s-btn-primary:hover {
+      box-shadow: 0 3px 12px ${GOLD_DIM}.35);
+    }
+    .dcm-s-btn-ghost {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      color: var(--text-secondary);
+    }
+    .dcm-s-btn-ghost:hover {
+      background: rgba(255,255,255,.06);
+      color: var(--text-primary);
+    }
+    .dcm-s-hint { font-size: 11px; color: var(--text-muted); text-align: center; }
+    .dcm-s-hint a {
+      color: var(--accent); text-decoration: none;
+      border-bottom: 1px solid rgba(201,168,76,.25);
+      transition: border-color .15s;
+    }
+    .dcm-s-hint a:hover { border-color: var(--accent); }
+
+    /* ── Responsive ── */
+    @media (max-width: 480px) {
+      #dcm-fab   { bottom: 16px; right: 16px; width: 46px; height: 46px; }
+      #dcm-panel { right: 8px; left: 8px; width: auto !important; bottom: 76px; max-height: 70vh; }
+    }
+  `;
+
+  const styleEl = p.document.createElement('style');
+  styleEl.id = STYLES_ID;
+  styleEl.textContent = CSS;
+  p.document.head.appendChild(styleEl);
+
+  /* ── HTML ── */
+  const root = p.document.createElement('div');
+  root.id = WIDGET_ID;
+  root.innerHTML = `
+    <button id="dcm-fab" title="Portfolio AI Assistant">
+      <span class="dcm-fab-bubble">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+      </span>
+      <span class="dcm-fab-x">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </span>
+    </button>
+
+    <div id="dcm-panel">
+      <div id="dcm-resize" title="Drag to resize — double-click to reset"></div>
+
+      <div id="dcm-header">
+        <div id="dcm-header-left">
+          <div id="dcm-status-dot"></div>
+          <span id="dcm-title">Portfolio AI</span>
+          <span id="dcm-model-badge">gpt-4o-mini</span>
+          <select id="dcm-model-sel-hidden">
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="gpt-4o">gpt-4o</option>
+            <option value="gpt-4-turbo-preview">gpt-4-turbo</option>
+            <option value="o3-mini">o3-mini</option>
+          </select>
+        </div>
+        <div id="dcm-header-right">
+          <button class="dcm-hdr-btn" id="dcm-clear-btn" title="Clear chat">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+              <path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
+            </svg>
+          </button>
+          <button class="dcm-hdr-btn" id="dcm-settings-btn" title="API Settings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          <button class="dcm-hdr-btn" id="dcm-close-btn" title="Close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="18 15 12 21 6 15"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="dcm-data-bar">
+        <div class="dcm-db-dot"></div>
+        Context: <span id="dcm-data-label">loading&hellip;</span>
+      </div>
+
+      <div id="dcm-msgs">
+        <div class="dcm-welcome">
+          <div class="dcm-welcome-title">Portfolio Intelligence</div>
+          <div class="dcm-welcome-sub">Ask anything about your holdings,<br>risk metrics, or methodology.</div>
+        </div>
+        <div id="dcm-typing">
+          <div class="dcm-dot"></div>
+          <div class="dcm-dot"></div>
+          <div class="dcm-dot"></div>
+        </div>
+      </div>
+
+      <div id="dcm-input-area">
+        <div id="dcm-chips">
+          <button class="dcm-chip" data-q="What are my top positions by risk contribution?">Top risk positions</button>
+          <button class="dcm-chip" data-q="Which sector is most overexposed vs S&amp;P 500?">Sector exposure</button>
+          <button class="dcm-chip" data-q="Summarize my worst stress test scenarios">Stress tests</button>
+          <button class="dcm-chip" data-q="Explain the VaR methodology used here">VaR methodology</button>
+        </div>
+        <div id="dcm-input-row">
+          <textarea id="dcm-textarea" placeholder="Ask about your portfolio&hellip;" rows="1"></textarea>
+          <button id="dcm-stop" title="Stop generating">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="3" y="3" width="18" height="18" rx="3"/>
+            </svg>
+          </button>
+          <button id="dcm-send" title="Send (Enter)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="dcm-settings">
+        <div id="dcm-settings-box">
+          <h3>Chat Settings</h3>
+          <div class="dcm-field">
+            <label class="dcm-s-label">OpenAI API Key</label>
+            <div class="dcm-s-desc">Your key is stored locally in your browser and never sent to any server.</div>
+            <input type="password" class="dcm-s-input" id="dcm-key-input" placeholder="sk-&hellip;" autocomplete="off">
+            <div class="dcm-key-status" id="dcm-key-msg"></div>
+          </div>
+          <div class="dcm-field">
+            <label class="dcm-s-label">Model</label>
+            <select class="dcm-s-select" id="dcm-settings-model">
+              <option value="gpt-4o-mini">gpt-4o-mini &mdash; fast &amp; economical</option>
+              <option value="gpt-4o">gpt-4o &mdash; most capable</option>
+              <option value="gpt-4-turbo-preview">gpt-4-turbo-preview</option>
+              <option value="o3-mini">o3-mini &mdash; deep reasoning</option>
+            </select>
+          </div>
+          <div class="dcm-s-btns">
+            <button class="dcm-s-btn dcm-s-btn-primary" id="dcm-save-btn">Save</button>
+            <button class="dcm-s-btn dcm-s-btn-ghost"   id="dcm-cancel-btn">Cancel</button>
+          </div>
+          <div class="dcm-s-hint">
+            Need a key?
+            <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">
+              platform.openai.com/api-keys &#8599;
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  p.document.body.appendChild(root);
+
+  /* ════════════════════════════════════════════════
+     JS
+  ════════════════════════════════════════════════ */
+  const $              = id => p.document.getElementById(id);
+  const fab            = $('dcm-fab');
+  const panel          = $('dcm-panel');
+  const msgs           = $('dcm-msgs');
+  const typing         = $('dcm-typing');
+  const chips          = $('dcm-chips');
+  const textarea       = $('dcm-textarea');
+  const sendBtn        = $('dcm-send');
+  const stopBtn        = $('dcm-stop');
+  const settModal      = $('dcm-settings');
+  const keyInput       = $('dcm-key-input');
+  const keyMsg         = $('dcm-key-msg');
+  const modelBadge     = $('dcm-model-badge');
+  const modelSelHidden = $('dcm-model-sel-hidden');
+  const sModelSel      = $('dcm-settings-model');
+
+  let history    = [];
+  let isOpen     = false;
+  let isStreaming = false;
+  let ctrl       = null;
+  let interacted = false;
+
+  /* restore preferences */
+  const savedModel = localStorage.getItem(STORAGE_MODEL) || 'gpt-4o-mini';
+  modelSelHidden.value   = savedModel;
+  sModelSel.value        = savedModel;
+  modelBadge.textContent = savedModel;
+
+  const savedSize = (() => { try { return JSON.parse(localStorage.getItem(STORAGE_SIZE) || 'null'); } catch { return null; } })();
+  if (savedSize) { panel.style.width = savedSize.w + 'px'; panel.style.height = savedSize.h + 'px'; }
+
+  const getKey     = () => localStorage.getItem(STORAGE_API) || '';
+  const keyIsValid = () => /^sk-[A-Za-z0-9\-_]{20,}/.test(getKey());
+
+  function openPanel()  { isOpen = true;  panel.classList.add('open');    fab.classList.add('open'); }
+  function closePanel() { isOpen = false; panel.classList.remove('open'); fab.classList.remove('open'); }
+
+  fab.addEventListener('click', () => isOpen ? closePanel() : openPanel());
+  $('dcm-close-btn').addEventListener('click', closePanel);
+
+  /* badge click cycles through models */
+  modelBadge.addEventListener('click', () => {
+    const opts = Array.from(modelSelHidden.options).map(o => o.value);
+    const idx  = (opts.indexOf(modelSelHidden.value) + 1) % opts.length;
+    modelSelHidden.value   = opts[idx];
+    sModelSel.value        = opts[idx];
+    modelBadge.textContent = opts[idx];
+    localStorage.setItem(STORAGE_MODEL, opts[idx]);
+  });
+
+  /* data-freshness label — reads from live p[DATA_KEY] */
+  const dataLabel = $('dcm-data-label');
+  function refreshDataBar() {
+    const d = p[DATA_KEY] || {};
+    if (d.portfolio && d.portfolio.name) {
+      const n = d.holdings ? d.holdings.length : 0;
+      const v = d.portfolio.total_value
+        ? '$' + Number(d.portfolio.total_value).toLocaleString('en-US', { maximumFractionDigits: 0 })
+        : '';
+      dataLabel.textContent = `${d.portfolio.name} · ${n} holdings${v ? ' · ' + v : ''}`;
+    } else {
+      dataLabel.textContent = 'no portfolio loaded';
+    }
+  }
+  refreshDataBar();
+  /* re-check every 2 s so it picks up new data after Streamlit re-renders */
+  setInterval(refreshDataBar, 2000);
+
+  /* clear */
+  $('dcm-clear-btn').addEventListener('click', () => {
+    history = []; interacted = false;
+    msgs.innerHTML = '';
+    const w = p.document.createElement('div');
+    w.className = 'dcm-welcome';
+    w.innerHTML = `
+      <div class="dcm-welcome-title">Portfolio Intelligence</div>
+      <div class="dcm-welcome-sub">Ask anything about your holdings,<br>risk metrics, or methodology.</div>
+    `;
+    msgs.appendChild(w);
+    msgs.appendChild(typing);
+    chips.classList.remove('hide');
+  });
+
+  /* settings */
+  function openSettings() {
+    keyInput.value     = getKey();
+    sModelSel.value    = localStorage.getItem(STORAGE_MODEL) || 'gpt-4o-mini';
+    keyMsg.textContent = '';
+    settModal.classList.add('open');
+  }
+  $('dcm-settings-btn').addEventListener('click', openSettings);
+  $('dcm-cancel-btn').addEventListener('click', () => settModal.classList.remove('open'));
+
+  /* save — validate key against /v1/models */
+  $('dcm-save-btn').addEventListener('click', async () => {
+    const key = keyInput.value.trim();
+    const mdl = sModelSel.value;
+    if (key && !/^sk-[A-Za-z0-9\-_]{20,}/.test(key)) {
+      keyMsg.textContent = 'Invalid format — must start with sk-';
+      keyMsg.className   = 'dcm-key-status dcm-key-err';
+      return;
+    }
+    if (key) {
+      keyMsg.textContent = 'Validating…';
+      keyMsg.className   = 'dcm-key-status dcm-key-pending';
+      try {
+        const res = await fetch('https://api.openai.com/v1/models', {
+          headers: { 'Authorization': `Bearer ${key}` },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        keyMsg.textContent = '✓ Valid key';
+        keyMsg.className   = 'dcm-key-status dcm-key-ok';
+      } catch (err) {
+        keyMsg.textContent = `Key rejected: ${err.message}`;
+        keyMsg.className   = 'dcm-key-status dcm-key-err';
+        return;
+      }
+      localStorage.setItem(STORAGE_API, key);
+    }
+    localStorage.setItem(STORAGE_MODEL, mdl);
+    modelSelHidden.value   = mdl;
+    modelBadge.textContent = mdl;
+    setTimeout(() => settModal.classList.remove('open'), 900);
+  });
+
+  /* textarea auto-resize */
+  textarea.addEventListener('input', () => {
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 90) + 'px';
+    sendBtn.classList.toggle('active', textarea.value.trim().length > 0);
+  });
+  textarea.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!isStreaming && textarea.value.trim()) sendMessage();
+    }
+  });
+  sendBtn.addEventListener('click', () => { if (!isStreaming && textarea.value.trim()) sendMessage(); });
+  stopBtn.addEventListener('click', () => { if (ctrl) ctrl.abort(); });
+
+  /* chips */
+  p.document.querySelectorAll('#dcm-chips .dcm-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      textarea.value = chip.dataset.q;
+      textarea.dispatchEvent(new Event('input'));
+      sendMessage();
+    });
+  });
+
+  /* resize handle — top-left, drag expands width left & height up */
+  const resizeHandle = $('dcm-resize');
+  let rActive = false, rStart = {};
+  resizeHandle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    rActive = true;
+    rStart  = { x: e.clientX, y: e.clientY, w: panel.offsetWidth, h: panel.offsetHeight };
+  });
+  resizeHandle.addEventListener('dblclick', () => {
+    panel.style.width  = DEFAULT_W + 'px';
+    panel.style.height = DEFAULT_H + 'px';
+    localStorage.removeItem(STORAGE_SIZE);
+  });
+  p.document.addEventListener('mousemove', e => {
+    if (!rActive) return;
+    const dw = rStart.x - e.clientX;
+    const dh = rStart.y - e.clientY;
+    panel.style.width  = Math.max(320, Math.min(rStart.w + dw, p.innerWidth  * .9))  + 'px';
+    panel.style.height = Math.max(300, Math.min(rStart.h + dh, p.innerHeight * .85)) + 'px';
+  });
+  p.document.addEventListener('mouseup', () => {
+    if (!rActive) return;
+    rActive = false;
+    localStorage.setItem(STORAGE_SIZE, JSON.stringify({ w: panel.offsetWidth, h: panel.offsetHeight }));
+  });
+
+  /* ── Markdown renderer ── */
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  function renderMd(raw) {
+    const blocks = [];
+
+    /* 1. protect fenced code blocks */
+    let txt = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+      const i = blocks.length;
+      blocks.push(`<pre><code>${escHtml(code.trim())}</code></pre>`);
+      return `\x00B${i}\x00`;
+    });
+
+    /* 2. escape remaining HTML special chars */
+    txt = txt.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+    /* 3. inline code */
+    txt = txt.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+    /* 4. headings → h3 */
+    txt = txt.replace(/^#{1,3} (.+)$/gm, '<h3>$1</h3>');
+
+    /* 5. bold / italic (order matters: *** before ** before *) */
+    txt = txt.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+    txt = txt.replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>');
+    txt = txt.replace(/_([^_\n]+)_/g,       '<em>$1</em>');
+    txt = txt.replace(/\*([^*\n]+)\*/g,     '<em>$1</em>');
+
+    /* 6. numbered list items — line-by-line so sub-bullets don't break numbering */
+    txt = txt.replace(/^(\d+)[.)]\s+(.+)$/gm,
+      (_, n, content) => `<div class="dcm-ol-item"><span class="dcm-ol-num">${n}.</span><span>${content}</span></div>`
+    );
+
+    /* 7. bullet list items — line-by-line */
+    txt = txt.replace(/^[-*•]\s+(.+)$/gm,
+      (_, content) => `<div class="dcm-li-item"><span class="dcm-li-dot">·</span><span>${content}</span></div>`
+    );
+
+    /* 8. paragraph wrap — skip lines that are already block elements */
+    txt = txt.split(/\n{2,}/).map(block => {
+      const b = block.trim();
+      if (!b) return '';
+      if (/^<(h3|div|pre|\x00)/.test(b)) return b;
+      /* wrap single-newline runs as <p> with <br> for soft breaks */
+      const inner = b.replace(/\n(?!<div|<h3|<pre)/g, '<br>');
+      return `<p>${inner}</p>`;
+    }).filter(Boolean).join('\n');
+
+    /* 9. restore code blocks */
+    txt = txt.replace(/\x00B(\d+)\x00/g, (_, i) => blocks[+i]);
+    return txt;
+  }
+
+  /* ── helpers ── */
+  function scrollBottom() { msgs.scrollTop = msgs.scrollHeight; }
+  function addMsg(role, content, streaming) {
+    const el = p.document.createElement('div');
+    if (role === 'user')  el.className = 'dcm-msg-user';
+    if (role === 'ai')    el.className = 'dcm-msg-ai';
+    if (role === 'error') el.className = 'dcm-msg-error';
+    if (!streaming) el.innerHTML = role === 'ai' ? renderMd(content) : escHtml(content);
+    msgs.insertBefore(el, typing);
+    scrollBottom();
+    return el;
+  }
+
+  /* ── buildContext — always injects full data ── */
+  function buildContext(userMsg) {
+    const data = p[DATA_KEY] || {};
+    if (!data.holdings || data.holdings.length === 0) return '';
+
+    const up        = userMsg.toUpperCase();
+    const tickerSet = new Set(data.holdings.map(h => h.ticker));
+    const mentioned = (up.match(/\b[A-Z]{1,5}\b/g) || []).filter(w => tickerSet.has(w));
+    const port      = data.portfolio || {};
+    const L         = [];
+
+    L.push('[CONTEXT DATA]');
+    L.push('PORTFOLIO SUMMARY:');
+    L.push(`  Name:                  ${port.name || 'Portfolio'}`);
+    L.push(`  Total Value:           $${Number(port.total_value || 0).toLocaleString('en-US',{maximumFractionDigits:0})}`);
+    L.push(`  Holdings count:        ${data.holdings.length}`);
+    L.push(`  Annualized Return:     ${(+(port.annualized_return||0)*100).toFixed(2)}%`);
+    L.push(`  Annualized Volatility: ${(+(port.annualized_vol||0)*100).toFixed(2)}%`);
+    L.push(`  Sharpe Ratio:          ${(+(port.sharpe||0)).toFixed(3)}`);
+    L.push(`  Sortino Ratio:         ${(+(port.sortino||0)).toFixed(3)}`);
+    L.push(`  Calmar Ratio:          ${(+(port.calmar||0)).toFixed(3)}`);
+    L.push(`  Beta (vs SPY):         ${(+(port.beta||0)).toFixed(3)}`);
+    L.push(`  Alpha:                 ${(+(port.alpha||0)*100).toFixed(3)}% ann.`);
+    L.push(`  Max Drawdown:          ${(+(port.max_drawdown||0)*100).toFixed(2)}%`);
+    L.push(`  Hist. VaR 95%:         ${(+(port.var_95_hist||0)*100).toFixed(2)}% (1-day)`);
+    L.push(`  Param. VaR 95%:        ${(+(port.var_95_param||0)*100).toFixed(2)}% (1-day)`);
+    L.push(`  MC VaR 95%:            ${(+(port.var_95_mc||0)*100).toFixed(2)}% (1-day)`);
+    L.push(`  Hist. VaR 99%:         ${(+(port.var_99_hist||0)*100).toFixed(2)}% (1-day)`);
+    L.push(`  Eff. Num. Bets:        ${(+(port.eff_num_bets||0)).toFixed(1)} (of ${data.holdings.length})`);
+    L.push(`  HHI Concentration:     ${(+(port.hhi||0)).toFixed(4)}`);
+    L.push(`  Diversification Ratio: ${(+(port.diversification_ratio||0)).toFixed(3)}`);
+    L.push(`  Avg Pair Correlation:  ${(+(port.avg_corr||0)).toFixed(3)}`);
+    L.push('');
+
+    if (data.sector_exposures && Object.keys(data.sector_exposures).length) {
+      L.push('SECTOR EXPOSURES (weight | # holdings):');
+      Object.entries(data.sector_exposures)
+        .sort((a,b) => b[1].weight - a[1].weight)
+        .forEach(([s,v]) => L.push(`  ${s}: ${(v.weight*100).toFixed(1)}% | ${v.count} holdings`));
+      L.push('');
+    }
+
+    L.push('ALL HOLDINGS (sorted by weight desc):');
+    L.push('  Ticker | Company | Sector | Wt% | Value | AnnRet% | Vol% | Beta | Sharpe | Sortino | MaxDD% | CompVaR95% | RiskCtrib%');
+    [...data.holdings].sort((a,b) => b.weight - a.weight).forEach(h => {
+      L.push(
+        `  ${h.ticker} | ${h.name} | ${h.sector}` +
+        ` | ${(h.weight*100).toFixed(2)}%` +
+        ` | $${Number(h.market_value||0).toLocaleString('en-US',{maximumFractionDigits:0})}` +
+        ` | ${((h.annualized_return||0)*100).toFixed(1)}%` +
+        ` | ${((h.annualized_vol||0)*100).toFixed(1)}%` +
+        ` | ${(+(h.beta||0)).toFixed(2)}` +
+        ` | ${(+(h.sharpe||0)).toFixed(2)}` +
+        ` | ${(+(h.sortino||0)).toFixed(2)}` +
+        ` | ${((h.max_drawdown||0)*100).toFixed(1)}%` +
+        ` | ${((h.component_var_95||0)*100).toFixed(3)}%` +
+        ` | ${(+(h.risk_contribution_pct||0)).toFixed(2)}%`
+      );
+    });
+    L.push('');
+
+    L.push('TOP 5 HOLDINGS BY RISK CONTRIBUTION:');
+    [...data.holdings]
+      .sort((a,b) => b.risk_contribution_pct - a.risk_contribution_pct)
+      .slice(0, 5)
+      .forEach((h,i) => {
+        L.push(
+          `  ${i+1}. ${h.ticker} (${h.name}): ${(+(h.risk_contribution_pct||0)).toFixed(2)}% of portfolio risk` +
+          ` | Wt ${(h.weight*100).toFixed(2)}% | Beta ${(+(h.beta||0)).toFixed(2)}` +
+          ` | Vol ${((h.annualized_vol||0)*100).toFixed(1)}% | Sharpe ${(+(h.sharpe||0)).toFixed(2)}`
+        );
+      });
+    L.push('');
+
+    if (mentioned.length > 0) {
+      L.push(`DETAILED DATA FOR: ${mentioned.join(', ')}`);
+      data.holdings.filter(h => mentioned.includes(h.ticker)).forEach(h => {
+        L.push(`  ${h.ticker} — ${h.name} (${h.sector})`);
+        L.push(`    Weight: ${(h.weight*100).toFixed(2)}%  |  Value: $${Number(h.market_value||0).toLocaleString('en-US',{maximumFractionDigits:0})}  |  Shares: ${h.shares_held}  |  Price: $${(+(h.current_price||0)).toFixed(2)}`);
+        L.push(`    Ann. Return: ${((h.annualized_return||0)*100).toFixed(2)}%  |  Ann. Vol: ${((h.annualized_vol||0)*100).toFixed(2)}%  |  Max Drawdown: ${((h.max_drawdown||0)*100).toFixed(2)}%`);
+        L.push(`    Beta: ${(+(h.beta||0)).toFixed(3)}  |  Alpha: ${((h.alpha||0)*100).toFixed(3)}%  |  Sharpe: ${(+(h.sharpe||0)).toFixed(3)}  |  Sortino: ${(+(h.sortino||0)).toFixed(3)}`);
+        L.push(`    Comp. VaR 95%: ${((h.component_var_95||0)*100).toFixed(4)}%  |  Marginal VaR 95%: ${((h.marginal_var_95||0)*100).toFixed(4)}%  |  Risk Contribution: ${(+(h.risk_contribution_pct||0)).toFixed(3)}%`);
+        L.push(`    Unrealized P&L: ${((h.unrealized_pct||0)*100).toFixed(2)}%`);
+      });
+      L.push('');
+    }
+
+    if (Array.isArray(data.stress_summary) && data.stress_summary.length) {
+      L.push('STRESS TEST SCENARIOS:');
+      data.stress_summary.forEach(s => {
+        L.push(`  ${s.scenario}: ${(+(s.pnl_pct||0)*100).toFixed(2)}% | $${Number(s.pnl_abs||0).toLocaleString('en-US',{maximumFractionDigits:0})}`);
+      });
+      L.push('');
+    }
+
+    if (data.methodology) {
+      const m = data.methodology;
+      L.push('METHODOLOGY:');
+      L.push(`  Covariance: ${m.covariance_mode}  |  VaR confidence: ${m.confidence_level_1}/${m.confidence_level_2}  |  ES: ${m.es_confidence_level}`);
+      L.push(`  MC: ${m.simulation_paths} paths / ${m.simulation_days}-day horizon  |  Shocks: ${m.mc_shock_distribution}`);
+      L.push(`  Lookback: ${m.lookback_years}yr  |  Benchmark: ${m.benchmark}`);
+      L.push('');
+    }
+
+    L.push('[/CONTEXT DATA]');
+    return L.join('\n');
+  }
+
+  /* ── sendMessage ── */
+  async function sendMessage() {
+    if (!keyIsValid()) { openPanel(); openSettings(); return; }
+    const text = textarea.value.trim();
+    if (!text || isStreaming) return;
+
+    if (!interacted) { interacted = true; chips.classList.add('hide'); }
+
+    textarea.value = '';
+    textarea.style.height = 'auto';
+    sendBtn.classList.remove('active');
+    addMsg('user', text);
+
+    const ctx    = buildContext(text);
+    const augMsg = ctx ? `${ctx}\n\nUser question: ${text}` : text;
+    history.push({ role: 'user', content: augMsg });
+    if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
+
+    isStreaming       = true;
+    typing.classList.add('show');
+    scrollBottom();
+    stopBtn.classList.add('show');
+    sendBtn.disabled  = true;
+    textarea.disabled = true;
+
+    const data         = p[DATA_KEY] || {};
+    const systemPrompt = data.systemPrompt || 'You are an expert portfolio risk analyst AI assistant.';
+    const apiMessages  = [{ role: 'system', content: systemPrompt }, ...history];
+    const model        = modelSelHidden.value;
+
+    ctrl = new AbortController();
+    let bubble = null, fullText = '', done = false;
+
+    try {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method:  'POST',
+        headers: { 'Authorization': `Bearer ${getKey()}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ model, messages: apiMessages, temperature: 0.3, max_tokens: 1500, stream: true }),
+        signal:  ctrl.signal,
+      });
+      if (!res.ok) {
+        const errJ = await res.json().catch(() => ({}));
+        throw new Error(errJ?.error?.message || `HTTP ${res.status}`);
+      }
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      while (!done) {
+        const { value, done: streamDone } = await reader.read();
+        if (streamDone) break;
+        const lines = decoder.decode(value, { stream: true }).split('\n');
+        for (const raw of lines) {
+          if (!raw.startsWith('data: ')) continue;
+          const str = raw.slice(6).trim();
+          if (str === '[DONE]') { done = true; break; }
+          try {
+            const token = JSON.parse(str)?.choices?.[0]?.delta?.content;
+            if (token) {
+              if (!bubble) { typing.classList.remove('show'); bubble = addMsg('ai', '', true); }
+              fullText += token;
+              bubble.innerHTML = renderMd(fullText);
+              scrollBottom();
+            }
+          } catch (_) { /* partial JSON */ }
+        }
+      }
+      if (!bubble) { typing.classList.remove('show'); bubble = addMsg('ai', '', true); }
+      history.push({ role: 'assistant', content: fullText });
+      if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
+
+    } catch (err) {
+      typing.classList.remove('show');
+      if (err.name === 'AbortError') {
+        if (!bubble) bubble = addMsg('ai', '', true);
+        bubble.innerHTML = renderMd(fullText || '&hellip;') +
+          '<br><span style="font-size:11px;color:var(--text-muted)">[stopped]</span>';
+        if (fullText) history.push({ role: 'assistant', content: fullText });
+        else          history.pop();
+      } else {
+        addMsg('error', `Error: ${err.message}`);
+        history.pop();
+      }
+    } finally {
+      isStreaming        = false;
+      sendBtn.disabled   = false;
+      textarea.disabled  = false;
+      stopBtn.classList.remove('show');
+      ctrl = null;
+      textarea.focus();
+    }
+  }
+
+})();
+</script>
+</body>
+</html>
